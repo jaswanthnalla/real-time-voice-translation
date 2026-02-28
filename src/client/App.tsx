@@ -14,7 +14,7 @@ interface SubtitleEntry {
   latencyMs?: number;
 }
 
-type ConnectionStatus = 'disconnected' | 'connected' | 'active' | 'error';
+type ConnectionStatus = 'disconnected' | 'connected' | 'active' | 'error' | 'mic_denied';
 
 const LANGUAGES = [
   { code: 'en', name: 'English', flag: '\u{1F1FA}\u{1F1F8}' },
@@ -223,8 +223,9 @@ export default function App(): React.ReactElement {
       setIsRecording(true);
       drawVisualizer();
     } catch (err) {
-      console.error('Failed to start recording:', err);
-      setStatus('error');
+      const isDenied = err instanceof DOMException &&
+        (err.name === 'NotAllowedError' || err.name === 'PermissionDeniedError');
+      setStatus(isDenied ? 'mic_denied' : 'error');
     }
   };
 
@@ -265,6 +266,7 @@ export default function App(): React.ReactElement {
           {status === 'connected' && 'Ready'}
           {status === 'active' && 'Translating...'}
           {status === 'error' && 'Connection error'}
+          {status === 'mic_denied' && 'Microphone access denied — allow mic in browser settings'}
         </span>
         {avgLatency > 0 && (
           <span className="latency"> | Latency: <span>{avgLatency}ms</span></span>

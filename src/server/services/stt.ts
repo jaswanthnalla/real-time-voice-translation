@@ -16,15 +16,27 @@ type IWordInfo = google.cloud.speech.v1.IWordInfo;
  * Speech-to-Text service using Google Cloud Streaming Recognition.
  * Converts real-time audio into text with interim and final results.
  */
+export type AudioEncoding = 'MULAW' | 'LINEAR16';
+
+export interface STTServiceOptions {
+  encoding?: AudioEncoding;
+  sampleRateHertz?: number;
+}
+
 export class STTService extends EventEmitter {
   private client: SpeechClient;
   private recognizeStream: Writable | null = null;
   private language: LanguageCode;
+  private encoding: AudioEncoding;
+  private sampleRateHertz: number;
   private restartTimeout: ReturnType<typeof setTimeout> | null = null;
 
-  constructor(language: LanguageCode) {
+  constructor(language: LanguageCode, options: STTServiceOptions = {}) {
     super();
     this.language = language;
+    // Default: MULAW@8kHz for Twilio; override to LINEAR16@16kHz for browser
+    this.encoding = options.encoding ?? 'MULAW';
+    this.sampleRateHertz = options.sampleRateHertz ?? 8000;
     this.client = new SpeechClient({
       projectId: config.google.projectId,
     });
@@ -33,15 +45,16 @@ export class STTService extends EventEmitter {
   /** Start a new streaming recognition session */
   startStream(): void {
     const locale = LANGUAGE_LOCALES[this.language];
+    const isBrowser = this.encoding === 'LINEAR16';
 
-    log.info(`Starting STT stream for language: ${this.language} (${locale})`);
+    log.info(`Starting STT stream for language: ${this.language} (${locale}), encoding: ${this.encoding}@${this.sampleRateHertz}Hz`);
 
     const request = {
       config: {
-        encoding: 'MULAW' as const,
-        sampleRateHertz: 8000, // Twilio phone audio
+        encoding: this.encoding as 'MULAW' | 'LINEAR16',
+        sampleRateHertz: this.sampleRateHertz,
         languageCode: locale,
-        model: 'phone_call',
+        model: isBrowser ? 'latest_long' : 'phone_call',
         useEnhanced: true,
         enableAutomaticPunctuation: true,
         enableWordTimeOffsets: true,

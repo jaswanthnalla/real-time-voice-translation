@@ -1,6 +1,6 @@
 import { EventEmitter } from 'events';
 import { createServiceLogger } from '../../utils/logger';
-import { STTService } from './stt';
+import { STTService, type AudioEncoding } from './stt';
 import { translationService } from './translation';
 import { ttsService } from './tts';
 import type {
@@ -65,6 +65,9 @@ export class TranslationPipeline extends EventEmitter {
     targetLanguage: LanguageCode;
     speaker: 'A' | 'B';
     voiceGender?: VoiceGender;
+    /** Audio format from the source. Defaults to MULAW@8kHz (Twilio). Use LINEAR16@16kHz for browser. */
+    audioEncoding?: AudioEncoding;
+    sampleRateHertz?: number;
   }) {
     super();
     this.sourceLanguage = params.sourceLanguage;
@@ -73,7 +76,10 @@ export class TranslationPipeline extends EventEmitter {
     this.voiceGender = params.voiceGender || 'FEMALE';
 
     // Create STT service for this pipeline's source language
-    this.stt = new STTService(params.sourceLanguage);
+    this.stt = new STTService(params.sourceLanguage, {
+      encoding: params.audioEncoding ?? 'MULAW',
+      sampleRateHertz: params.sampleRateHertz ?? 8000,
+    });
 
     // Wire up STT events
     this.stt.on('transcription', (result: STTResult) => {

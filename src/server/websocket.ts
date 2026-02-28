@@ -322,16 +322,21 @@ export function createSocketIOServer(server: HttpServer): SocketIOServer {
         callerB: { phoneNumber: 'browser-user-b', language: params.targetLanguage },
       });
 
+      // Browser sends LINEAR16 PCM at 16kHz (Web Audio API)
       const pipelineAtoB = new TranslationPipeline({
         sourceLanguage: params.sourceLanguage,
         targetLanguage: params.targetLanguage,
         speaker: 'A',
+        audioEncoding: 'LINEAR16',
+        sampleRateHertz: 16000,
       });
 
       const pipelineBtoA = new TranslationPipeline({
         sourceLanguage: params.targetLanguage,
         targetLanguage: params.sourceLanguage,
         speaker: 'B',
+        audioEncoding: 'LINEAR16',
+        sampleRateHertz: 16000,
       });
 
       const call: ActiveCall = {
