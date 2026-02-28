@@ -1,0 +1,11 @@
+node_modules/
+dist/
+logs/
+*.log
+.env
+.env.production
+.env.local
+config/google-cloud-key.json
+uploads/
+coverage/
+.claude/

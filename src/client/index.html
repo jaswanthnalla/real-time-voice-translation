@@ -1,0 +1,286 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Real-Time Voice Translation</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: #0a0a1a;
+      color: #e0e0e0;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+    }
+
+    .header {
+      text-align: center;
+      padding: 24px 20px 16px;
+      background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+      border-bottom: 1px solid #2a2a4a;
+    }
+
+    .header h1 {
+      font-size: 1.6rem;
+      font-weight: 600;
+      color: #fff;
+      margin-bottom: 4px;
+    }
+
+    .header p {
+      font-size: 0.85rem;
+      color: #8888aa;
+    }
+
+    .status-bar {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      padding: 10px;
+      font-size: 0.8rem;
+    }
+
+    .status-dot {
+      width: 8px; height: 8px;
+      border-radius: 50%;
+      background: #555;
+    }
+
+    .status-dot.connected { background: #4caf50; }
+    .status-dot.active { background: #4caf50; animation: pulse 1.5s infinite; }
+    .status-dot.error { background: #f44336; }
+
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.4; }
+    }
+
+    /* ── Language Selection ── */
+    .language-selector {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 16px;
+      padding: 20px;
+      background: #111128;
+    }
+
+    .lang-select {
+      background: #1a1a3e;
+      color: #e0e0e0;
+      border: 1px solid #3a3a6a;
+      border-radius: 8px;
+      padding: 10px 16px;
+      font-size: 0.95rem;
+      cursor: pointer;
+      min-width: 160px;
+    }
+
+    .lang-select:focus {
+      outline: none;
+      border-color: #6366f1;
+    }
+
+    .swap-btn {
+      background: #6366f1;
+      border: none;
+      border-radius: 50%;
+      width: 40px; height: 40px;
+      color: white;
+      font-size: 1.2rem;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      transition: transform 0.3s;
+    }
+
+    .swap-btn:hover { transform: rotate(180deg); }
+
+    /* ── Main Content ── */
+    .main {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      padding: 16px;
+      gap: 16px;
+      max-width: 800px;
+      margin: 0 auto;
+      width: 100%;
+    }
+
+    /* ── Subtitle Panel ── */
+    .subtitle-panel {
+      flex: 1;
+      background: #111128;
+      border-radius: 12px;
+      border: 1px solid #2a2a4a;
+      overflow-y: auto;
+      max-height: 400px;
+      min-height: 200px;
+    }
+
+    .subtitle-panel-header {
+      padding: 12px 16px;
+      font-weight: 600;
+      font-size: 0.85rem;
+      color: #8888aa;
+      border-bottom: 1px solid #2a2a4a;
+      position: sticky;
+      top: 0;
+      background: #111128;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+
+    .subtitle-entries {
+      padding: 12px 16px;
+    }
+
+    .subtitle-entry {
+      margin-bottom: 16px;
+      animation: fadeIn 0.3s ease-in;
+    }
+
+    @keyframes fadeIn {
+      from { opacity: 0; transform: translateY(4px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+
+    .subtitle-entry .speaker {
+      font-size: 0.7rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      margin-bottom: 4px;
+    }
+
+    .subtitle-entry .speaker.a { color: #6366f1; }
+    .subtitle-entry .speaker.b { color: #22d3ee; }
+
+    .subtitle-entry .original {
+      font-size: 0.95rem;
+      color: #ccc;
+      margin-bottom: 2px;
+    }
+
+    .subtitle-entry .translated {
+      font-size: 1.1rem;
+      color: #fff;
+      font-weight: 500;
+    }
+
+    .subtitle-entry.interim .translated {
+      color: #999;
+      font-style: italic;
+    }
+
+    .subtitle-entry .meta {
+      font-size: 0.7rem;
+      color: #555;
+      margin-top: 2px;
+    }
+
+    /* ── Waveform Visualizer ── */
+    .visualizer {
+      height: 60px;
+      background: #111128;
+      border-radius: 12px;
+      border: 1px solid #2a2a4a;
+      overflow: hidden;
+    }
+
+    .visualizer canvas {
+      width: 100%;
+      height: 100%;
+    }
+
+    /* ── Controls ── */
+    .controls {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 16px;
+      padding: 20px;
+    }
+
+    .mic-btn {
+      width: 72px; height: 72px;
+      border-radius: 50%;
+      border: 3px solid #6366f1;
+      background: transparent;
+      color: #6366f1;
+      font-size: 1.8rem;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      transition: all 0.2s;
+    }
+
+    .mic-btn:hover {
+      background: rgba(99, 102, 241, 0.1);
+    }
+
+    .mic-btn.recording {
+      background: #f44336;
+      border-color: #f44336;
+      color: white;
+      animation: pulse 1.5s infinite;
+    }
+
+    .end-btn {
+      padding: 12px 28px;
+      border-radius: 24px;
+      border: none;
+      background: #f44336;
+      color: white;
+      font-size: 0.9rem;
+      font-weight: 600;
+      cursor: pointer;
+      display: none;
+    }
+
+    .end-btn.visible { display: block; }
+
+    /* ── Latency Indicator ── */
+    .latency {
+      text-align: center;
+      font-size: 0.75rem;
+      color: #666;
+      padding: 4px;
+    }
+
+    .latency span {
+      color: #4caf50;
+      font-weight: 600;
+    }
+
+    /* ── Empty state ── */
+    .empty-state {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      height: 200px;
+      color: #555;
+    }
+
+    .empty-state .icon {
+      font-size: 2.5rem;
+      margin-bottom: 12px;
+    }
+
+    .empty-state p {
+      font-size: 0.9rem;
+    }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+</body>
+</html>
