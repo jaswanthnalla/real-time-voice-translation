@@ -1,0 +1,14 @@
+{
+  "server": {
+    "port": 3099
+  },
+  "logging": {
+    "level": "silent"
+  },
+  "metrics": {
+    "enabled": false
+  },
+  "rateLimit": {
+    "max": 10000
+  }
+}

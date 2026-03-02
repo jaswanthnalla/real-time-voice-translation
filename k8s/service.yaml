@@ -1,0 +1,35 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: voice-translation
+  labels:
+    app: voice-translation
+spec:
+  type: ClusterIP
+  ports:
+    - port: 3001
+      targetPort: 3001
+      protocol: TCP
+      name: http
+  selector:
+    app: voice-translation
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: voice-translation-lb
+  labels:
+    app: voice-translation
+spec:
+  type: LoadBalancer
+  ports:
+    - port: 80
+      targetPort: 3001
+      protocol: TCP
+      name: http
+    - port: 443
+      targetPort: 3001
+      protocol: TCP
+      name: https
+  selector:
+    app: voice-translation
