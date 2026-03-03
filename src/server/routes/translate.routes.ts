@@ -17,6 +17,25 @@ const translateSchema = Joi.object({
   sessionId: Joi.string().optional(),
 });
 
+/**
+ * @swagger
+ * /api/translate:
+ *   post:
+ *     summary: Translate text between languages
+ *     tags: [Translation]
+ *     security:
+ *       - bearerAuth: []
+ *       - apiKeyAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             $ref: '#/components/schemas/TranslationRequest'
+ *     responses:
+ *       200:
+ *         description: Translation result
+ */
 router.post(
   '/translate',
   validate(translateSchema),

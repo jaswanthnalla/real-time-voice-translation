@@ -14,6 +14,8 @@ interface TranscriptEntry {
 export function useTranslation(sourceLang: string, targetLang: string) {
   const [isConnected, setIsConnected] = useState(false);
   const [isRecording, setIsRecording] = useState(false);
+  const [isPlaying, setIsPlaying] = useState(false);
+  const [interimText, setInterimText] = useState<string | null>(null);
   const [transcript, setTranscript] = useState<TranscriptEntry[]>([]);
   const [error, setError] = useState<string | null>(null);
 
@@ -35,6 +37,10 @@ export function useTranslation(sourceLang: string, targetLang: string) {
       setIsConnected(false);
     });
 
+    socket.on('translation_interim', (data: { interimText: string; sourceLang: string }) => {
+      setInterimText(data.interimText);
+    });
+
     socket.on('translation_result', (data: {
       originalText: string;
       translatedText: string;
@@ -42,6 +48,9 @@ export function useTranslation(sourceLang: string, targetLang: string) {
       targetLang: string;
       audioData?: string;
     }) => {
+      // Clear interim text when final result arrives
+      setInterimText(null);
+
       setTranscript((prev) => [
         ...prev,
         {
@@ -65,7 +74,13 @@ export function useTranslation(sourceLang: string, targetLang: string) {
     });
 
     socketRef.current = socket;
-    playerRef.current = new AudioPlayer();
+
+    const player = new AudioPlayer();
+    player.setCallbacks(
+      () => setIsPlaying(true),
+      () => setIsPlaying(false)
+    );
+    playerRef.current = player;
 
     return () => {
       socket.disconnect();
@@ -90,6 +105,12 @@ export function useTranslation(sourceLang: string, targetLang: string) {
   const startRecording = useCallback(async () => {
     const socket = socketRef.current;
     if (!socket) return;
+
+    // Same-language guard
+    if (sourceLang === targetLang) {
+      setError('Source and target languages must be different');
+      return;
+    }
 
     socket.emit('join_session', { sourceLang, targetLang });
 
@@ -125,14 +146,22 @@ export function useTranslation(sourceLang: string, targetLang: string) {
     recorderRef.current = null;
     socketRef.current?.emit('leave_session');
     setIsRecording(false);
+    setInterimText(null);
+  }, []);
+
+  const clearTranscript = useCallback(() => {
+    setTranscript([]);
   }, []);
 
   return {
     isConnected,
     isRecording,
+    isPlaying,
+    interimText,
     transcript,
     error,
     startRecording,
     stopRecording,
+    clearTranscript,
   };
 }

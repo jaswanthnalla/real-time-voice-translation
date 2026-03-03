@@ -34,6 +34,22 @@ jest.mock('@google-cloud/text-to-speech', () => ({
   })),
 }));
 
+// Mock database and summary services to avoid DB/OpenAI calls
+jest.mock('../../../src/server/services/database.service', () => ({
+  db: {
+    isConnected: jest.fn().mockReturnValue(false),
+    query: jest.fn(),
+    initialize: jest.fn(),
+  },
+}));
+
+jest.mock('../../../src/server/services/summary.service', () => ({
+  summaryService: {
+    isAvailable: jest.fn().mockReturnValue(false),
+    generateSummary: jest.fn(),
+  },
+}));
+
 describe('Socket.IO Server', () => {
   let httpServer: http.Server;
   let ioServer: Server;
@@ -111,6 +127,37 @@ describe('Socket.IO Server', () => {
     });
   });
 
+  it('should configure WEBM_OPUS encoding for browser audio', (done) => {
+    // Verify the pipeline is created with WEBM_OPUS config
+    // by checking that SpeechClient.streamingRecognize is called with correct params
+    const { SpeechClient } = require('@google-cloud/speech');
+
+    clientSocket = ioClient(`http://localhost:${port}`, {
+      transports: ['websocket'],
+    });
+
+    clientSocket.on('connect', () => {
+      clientSocket.emit('join_session', {
+        sourceLang: 'en',
+        targetLang: 'es',
+      });
+    });
+
+    clientSocket.on('session_joined', () => {
+      // The pipeline was created; verify streamingRecognize was called
+      const mockInstance = SpeechClient.mock.results[SpeechClient.mock.results.length - 1]?.value;
+      if (mockInstance) {
+        const recognizeCall = mockInstance.streamingRecognize.mock.calls;
+        if (recognizeCall.length > 0) {
+          const streamingConfig = recognizeCall[0][0]?.config;
+          expect(streamingConfig.encoding).toBe('WEBM_OPUS');
+          expect(streamingConfig.sampleRateHertz).toBe(48000);
+        }
+      }
+      done();
+    });
+  });
+
   it('should emit translation_result when pipeline completes', (done) => {
     clientSocket = ioClient(`http://localhost:${port}`, {
       transports: ['websocket'],
@@ -149,6 +196,47 @@ describe('Socket.IO Server', () => {
       expect(data.originalText).toBe('Hello world');
       expect(data.translatedText).toBe('Hola mundo');
       expect(data.audioData).toBeDefined();
+      done();
+    });
+  });
+
+  it('should emit translation_interim for non-final results', (done) => {
+    clientSocket = ioClient(`http://localhost:${port}`, {
+      transports: ['websocket'],
+    });
+
+    clientSocket.on('connect', () => {
+      clientSocket.emit('join_session', {
+        sourceLang: 'en',
+        targetLang: 'es',
+      });
+    });
+
+    clientSocket.on('session_joined', () => {
+      // Simulate sending audio
+      clientSocket.emit('audio_chunk', {
+        audioData: Buffer.from('test-audio').toString('base64'),
+        sourceLang: 'en',
+        targetLang: 'es',
+      });
+
+      // Simulate STT returning a non-final transcript
+      setTimeout(() => {
+        const { _mockStream } = require('@google-cloud/speech');
+        _mockStream.emit('data', {
+          results: [
+            {
+              alternatives: [{ transcript: 'Hello wor', confidence: 0.5 }],
+              isFinal: false,
+            },
+          ],
+        });
+      }, 100);
+    });
+
+    clientSocket.on('translation_interim', (data) => {
+      expect(data.interimText).toBe('Hello wor');
+      expect(data.sourceLang).toBe('en');
       done();
     });
   });

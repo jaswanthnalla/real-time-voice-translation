@@ -51,16 +51,27 @@ export class AudioRecorder {
 
 export class AudioPlayer {
   private audioContext: AudioContext | null = null;
+  private onPlayStart?: () => void;
+  private onPlayEnd?: () => void;
+
+  setCallbacks(onStart: () => void, onEnd: () => void): void {
+    this.onPlayStart = onStart;
+    this.onPlayEnd = onEnd;
+  }
 
   async play(audioData: ArrayBuffer): Promise<void> {
     if (!this.audioContext) {
       this.audioContext = new AudioContext();
     }
 
-    const audioBuffer = await this.audioContext.decodeAudioData(audioData);
+    const audioBuffer = await this.audioContext.decodeAudioData(audioData.slice(0));
     const source = this.audioContext.createBufferSource();
     source.buffer = audioBuffer;
     source.connect(this.audioContext.destination);
+    this.onPlayStart?.();
+    source.onended = () => {
+      this.onPlayEnd?.();
+    };
     source.start(0);
   }
 

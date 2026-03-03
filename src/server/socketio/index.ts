@@ -51,15 +51,26 @@ export function setupSocketIOServer(server: http.Server): Server {
       const session = sessionService.create({ sourceLang, targetLang });
       sessionId = session.id;
 
-      // Create pipeline for browser audio (LINEAR16 @ 16kHz)
+      // Create pipeline for browser audio (WEBM_OPUS from MediaRecorder)
       pipeline = new PipelineService({
         sourceLang,
         targetLang,
         audioOptions: {
-          encoding: 'LINEAR16',
-          sampleRateHertz: 16000,
+          encoding: 'WEBM_OPUS',
+          sampleRateHertz: 48000,
           model: 'latest_long',
         },
+        ttsAudioOptions: {
+          audioEncoding: 'MP3',
+          sampleRateHertz: 24000,
+        },
+      });
+
+      pipeline.on('interim', (data: { transcript: string }) => {
+        socket.emit('translation_interim', {
+          interimText: data.transcript,
+          sourceLang,
+        });
       });
 
       pipeline.on('translated-audio', (result) => {

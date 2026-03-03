@@ -18,6 +18,33 @@ const createSessionSchema = Joi.object({
   calleeNumber: Joi.string().optional(),
 });
 
+/**
+ * @swagger
+ * /api/sessions:
+ *   post:
+ *     summary: Create a new translation session
+ *     tags: [Sessions]
+ *     security:
+ *       - bearerAuth: []
+ *       - apiKeyAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [sourceLang, targetLang]
+ *             properties:
+ *               sourceLang:
+ *                 type: string
+ *                 example: en
+ *               targetLang:
+ *                 type: string
+ *                 example: es
+ *     responses:
+ *       201:
+ *         description: Session created
+ */
 router.post(
   '/sessions',
   validate(createSessionSchema),
@@ -34,8 +61,21 @@ router.post(
   }
 );
 
-router.get('/sessions', (_req: Request, res: Response) => {
-  const sessions = sessionService.list();
+/**
+ * @swagger
+ * /api/sessions:
+ *   get:
+ *     summary: List all sessions
+ *     tags: [Sessions]
+ *     security:
+ *       - bearerAuth: []
+ *       - apiKeyAuth: []
+ *     responses:
+ *       200:
+ *         description: List of sessions
+ */
+router.get('/sessions', async (_req: Request, res: Response) => {
+  const sessions = await sessionService.listFromDb();
 
   const response: ApiResponse = {
     success: true,
@@ -46,6 +86,27 @@ router.get('/sessions', (_req: Request, res: Response) => {
   res.json(response);
 });
 
+/**
+ * @swagger
+ * /api/sessions/{id}:
+ *   get:
+ *     summary: Get session by ID
+ *     tags: [Sessions]
+ *     security:
+ *       - bearerAuth: []
+ *       - apiKeyAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: string
+ *     responses:
+ *       200:
+ *         description: Session details
+ *       404:
+ *         description: Session not found
+ */
 router.get(
   '/sessions/:id',
   (req: Request, res: Response, next: NextFunction) => {
@@ -66,6 +127,72 @@ router.get(
   }
 );
 
+/**
+ * @swagger
+ * /api/sessions/{id}/summary:
+ *   get:
+ *     summary: Get AI-generated conversation summary
+ *     tags: [Sessions]
+ *     security:
+ *       - bearerAuth: []
+ *       - apiKeyAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: string
+ *     responses:
+ *       200:
+ *         description: Conversation summary
+ *       404:
+ *         description: Summary not found
+ */
+router.get(
+  '/sessions/:id/summary',
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const summary = await sessionService.getSummary(req.params.id);
+
+      if (!summary) {
+        next(new AppError(404, ERROR_CODES.SESSION_NOT_FOUND, 'Summary not found'));
+        return;
+      }
+
+      const response: ApiResponse = {
+        success: true,
+        data: summary,
+        timestamp: new Date().toISOString(),
+      };
+
+      res.json(response);
+    } catch (error) {
+      next(error);
+    }
+  }
+);
+
+/**
+ * @swagger
+ * /api/sessions/{id}:
+ *   delete:
+ *     summary: Delete a session
+ *     tags: [Sessions]
+ *     security:
+ *       - bearerAuth: []
+ *       - apiKeyAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: string
+ *     responses:
+ *       200:
+ *         description: Session deleted
+ *       404:
+ *         description: Session not found
+ */
 router.delete(
   '/sessions/:id',
   (req: Request, res: Response, next: NextFunction) => {

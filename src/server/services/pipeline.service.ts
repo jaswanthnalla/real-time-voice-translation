@@ -1,13 +1,14 @@
 import { EventEmitter } from 'events';
 import { STTService, STTAudioOptions } from './stt.service';
 import { TranslationService } from './translation.service';
-import { TTSService } from './tts.service';
+import { TTSService, TTSAudioOptions } from './tts.service';
 import { logger } from '../../utils/logger';
 import { translationDuration } from '../../utils/metrics';
 import { PipelineConfig, STTResult } from '../../types';
 
 export interface ExtendedPipelineConfig extends PipelineConfig {
   audioOptions?: STTAudioOptions;
+  ttsAudioOptions?: TTSAudioOptions;
 }
 
 export class PipelineService extends EventEmitter {
@@ -29,7 +30,13 @@ export class PipelineService extends EventEmitter {
 
   private setupSTTListener(): void {
     this.sttService.on('transcription', async (result: STTResult) => {
-      if (!result.isFinal || !result.transcript.trim()) return;
+      // Emit interim results for real-time UI feedback
+      if (!result.isFinal) {
+        this.emit('interim', { transcript: result.transcript });
+        return;
+      }
+
+      if (!result.transcript.trim()) return;
 
       try {
         this.isProcessing = true;
@@ -48,10 +55,11 @@ export class PipelineService extends EventEmitter {
           this.config.targetLang
         );
 
-        // Synthesize
+        // Synthesize with configurable audio options
         const ttsResult = await this.ttsService.synthesize(
           translationResult.translatedText,
-          this.config.targetLang
+          this.config.targetLang,
+          this.config.ttsAudioOptions
         );
 
         const totalDurationMs = Date.now() - pipelineStart;

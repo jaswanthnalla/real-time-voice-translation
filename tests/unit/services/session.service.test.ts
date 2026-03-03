@@ -1,3 +1,25 @@
+// Mock database and summary services before importing session service
+jest.mock('../../../src/server/services/database.service', () => ({
+  db: {
+    isConnected: jest.fn().mockReturnValue(false),
+    query: jest.fn().mockResolvedValue({ rows: [], rowCount: 0 }),
+    initialize: jest.fn().mockResolvedValue(undefined),
+    close: jest.fn().mockResolvedValue(undefined),
+  },
+}));
+
+jest.mock('../../../src/server/services/summary.service', () => ({
+  summaryService: {
+    isAvailable: jest.fn().mockReturnValue(false),
+    generateSummary: jest.fn().mockResolvedValue({
+      summary: 'Test summary',
+      keyPoints: [],
+      actionItems: [],
+      sentiment: 'neutral',
+    }),
+  },
+}));
+
 import { sessionService } from '../../../src/server/services/session.service';
 
 // Reset the singleton between tests

@@ -4,6 +4,11 @@ import { translationDuration } from '../../utils/metrics';
 import { AUDIO_CONFIG } from '../../shared/constants';
 import { TTSResult } from '../../types';
 
+export interface TTSAudioOptions {
+  audioEncoding?: 'MULAW' | 'MP3' | 'OGG_OPUS' | 'LINEAR16';
+  sampleRateHertz?: number;
+}
+
 export class TTSService {
   private client: TextToSpeechClient;
 
@@ -11,8 +16,15 @@ export class TTSService {
     this.client = new TextToSpeechClient();
   }
 
-  async synthesize(text: string, languageCode: string): Promise<TTSResult> {
+  async synthesize(
+    text: string,
+    languageCode: string,
+    audioOptions?: TTSAudioOptions
+  ): Promise<TTSResult> {
     const startTime = Date.now();
+
+    const encoding = audioOptions?.audioEncoding || 'MULAW';
+    const sampleRate = audioOptions?.sampleRateHertz || AUDIO_CONFIG.SAMPLE_RATE;
 
     try {
       const [response] = await this.client.synthesizeSpeech({
@@ -22,8 +34,8 @@ export class TTSService {
           ssmlGender: 'NEUTRAL' as const,
         },
         audioConfig: {
-          audioEncoding: 'MULAW' as const,
-          sampleRateHertz: AUDIO_CONFIG.SAMPLE_RATE,
+          audioEncoding: encoding as 'MULAW' | 'MP3' | 'OGG_OPUS' | 'LINEAR16',
+          sampleRateHertz: sampleRate,
         },
       });
 
@@ -39,13 +51,13 @@ export class TTSService {
         ? audioContent
         : Buffer.from(audioContent as Uint8Array);
 
-      logger.debug('TTS synthesis completed', { languageCode, durationMs });
+      logger.debug('TTS synthesis completed', { languageCode, encoding, durationMs });
 
       return {
         audioContent: audioBuffer,
         durationMs,
-        encoding: AUDIO_CONFIG.ENCODING,
-        sampleRate: AUDIO_CONFIG.SAMPLE_RATE,
+        encoding,
+        sampleRate,
       };
     } catch (error) {
       logger.error('TTS synthesis failed', {

@@ -3,17 +3,18 @@ import NodeCache from 'node-cache';
 import { config } from '../../config';
 import { logger } from '../../utils/logger';
 import { translationDuration, translationCounter } from '../../utils/metrics';
+import { redis } from './redis.service';
 import { TranslationResult } from '../../types';
 
 export class TranslationService {
   private client: TranslationServiceClient;
-  private cache: NodeCache;
+  private localCache: NodeCache;
   private projectId: string;
 
   constructor() {
     this.client = new TranslationServiceClient();
     this.projectId = config.google.projectId;
-    this.cache = new NodeCache({ stdTTL: config.translation.cacheTtl });
+    this.localCache = new NodeCache({ stdTTL: config.translation.cacheTtl });
   }
 
   async translate(
@@ -22,20 +23,36 @@ export class TranslationService {
     targetLang: string
   ): Promise<TranslationResult> {
     const startTime = Date.now();
-    const cacheKey = `${sourceLang}:${targetLang}:${text}`;
+    const cacheKey = `translation:${sourceLang}:${targetLang}:${text}`;
 
-    const cached = this.cache.get<string>(cacheKey);
-    if (cached) {
-      logger.debug('Translation cache hit', { sourceLang, targetLang });
+    // L1: Check local in-memory cache
+    const localCached = this.localCache.get<string>(cacheKey);
+    if (localCached) {
+      logger.debug('Translation L1 cache hit', { sourceLang, targetLang });
       return {
         originalText: text,
-        translatedText: cached,
+        translatedText: localCached,
         sourceLang,
         targetLang,
         durationMs: Date.now() - startTime,
       };
     }
 
+    // L2: Check Redis cache
+    const redisCached = await redis.get(cacheKey);
+    if (redisCached) {
+      logger.debug('Translation L2 (Redis) cache hit', { sourceLang, targetLang });
+      this.localCache.set(cacheKey, redisCached);
+      return {
+        originalText: text,
+        translatedText: redisCached,
+        sourceLang,
+        targetLang,
+        durationMs: Date.now() - startTime,
+      };
+    }
+
+    // L3: Call Google Translate API
     try {
       const parent = `projects/${this.projectId}/locations/global`;
 
@@ -50,7 +67,9 @@ export class TranslationService {
       const translatedText = response.translations?.[0]?.translatedText || '';
       const durationMs = Date.now() - startTime;
 
-      this.cache.set(cacheKey, translatedText);
+      // Store in both cache tiers
+      this.localCache.set(cacheKey, translatedText);
+      await redis.set(cacheKey, translatedText, config.translation.cacheTtl);
 
       translationDuration.observe({ stage: 'translation' }, durationMs / 1000);
       translationCounter.inc({ source_lang: sourceLang, target_lang: targetLang, status: 'success' });

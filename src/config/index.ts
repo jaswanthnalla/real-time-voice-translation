@@ -43,6 +43,12 @@ export const config = {
     credentials: env('GOOGLE_APPLICATION_CREDENTIALS', ''),
   },
 
+  openai: {
+    apiKey: env('OPENAI_API_KEY', ''),
+    model: env('OPENAI_MODEL', 'gpt-4'),
+    maxTokens: envInt('OPENAI_MAX_TOKENS', 1000),
+  },
+
   database: {
     url: env('DATABASE_URL', 'postgresql://localhost:5432/voice_translation'),
   },

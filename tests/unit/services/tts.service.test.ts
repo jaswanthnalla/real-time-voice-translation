@@ -18,7 +18,7 @@ describe('TTSService', () => {
   });
 
   describe('synthesize', () => {
-    it('should synthesize text to audio', async () => {
+    it('should synthesize text to audio with default MULAW encoding', async () => {
       const result = await service.synthesize('Hello world', 'en-US');
 
       expect(result.audioContent).toBeInstanceOf(Buffer);
@@ -26,6 +26,27 @@ describe('TTSService', () => {
       expect(result.encoding).toBe('MULAW');
       expect(result.sampleRate).toBe(8000);
       expect(result.durationMs).toBeGreaterThanOrEqual(0);
+    });
+
+    it('should synthesize with custom MP3 encoding for browser playback', async () => {
+      const result = await service.synthesize('Hello world', 'en-US', {
+        audioEncoding: 'MP3',
+        sampleRateHertz: 24000,
+      });
+
+      expect(result.audioContent).toBeInstanceOf(Buffer);
+      expect(result.encoding).toBe('MP3');
+      expect(result.sampleRate).toBe(24000);
+    });
+
+    it('should synthesize with OGG_OPUS encoding', async () => {
+      const result = await service.synthesize('Hello world', 'en-US', {
+        audioEncoding: 'OGG_OPUS',
+        sampleRateHertz: 48000,
+      });
+
+      expect(result.encoding).toBe('OGG_OPUS');
+      expect(result.sampleRate).toBe(48000);
     });
 
     it('should throw if no audio content is returned', async () => {

@@ -35,7 +35,7 @@ export class STTService extends EventEmitter {
 
     const request = {
       config: {
-        encoding: encoding as 'MULAW' | 'LINEAR16',
+        encoding: encoding as 'MULAW' | 'LINEAR16' | 'WEBM_OPUS',
         sampleRateHertz,
         languageCode: this.languageCode,
         enableAutomaticPunctuation: true,
