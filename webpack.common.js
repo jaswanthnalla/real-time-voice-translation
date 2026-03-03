@@ -21,7 +21,13 @@ module.exports = {
     rules: [
       {
         test: /\.tsx?$/,
-        use: 'ts-loader',
+        use: {
+          loader: 'ts-loader',
+          options: {
+            configFile: 'tsconfig.client.json',
+            transpileOnly: true,
+          },
+        },
         exclude: /node_modules/,
       },
       {

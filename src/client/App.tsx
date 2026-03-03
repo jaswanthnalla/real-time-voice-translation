@@ -13,6 +13,7 @@ export const App: React.FC = () => {
     isConnected,
     isRecording,
     transcript,
+    error,
     startRecording,
     stopRecording,
   } = useTranslation(sourceLang, targetLang);
@@ -39,6 +40,8 @@ export const App: React.FC = () => {
           onStop={stopRecording}
           disabled={!isConnected}
         />
+
+        {error && <div className="error-banner">{error}</div>}
 
         <TranscriptView entries={transcript} />
       </main>

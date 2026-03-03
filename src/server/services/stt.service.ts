@@ -5,29 +5,41 @@ import { translationDuration } from '../../utils/metrics';
 import { AUDIO_CONFIG, STT_STREAM_LIMIT_MS } from '../../shared/constants';
 import { STTResult } from '../../types';
 
+export interface STTAudioOptions {
+  encoding?: string;
+  sampleRateHertz?: number;
+  model?: string;
+}
+
 export class STTService extends EventEmitter {
   private client: SpeechClient;
   private recognizeStream: ReturnType<SpeechClient['streamingRecognize']> | null = null;
   private streamStartTime: number = 0;
   private restartTimer: NodeJS.Timeout | null = null;
   private languageCode: string;
+  private audioOptions: STTAudioOptions;
 
-  constructor(languageCode: string) {
+  constructor(languageCode: string, audioOptions?: STTAudioOptions) {
     super();
     this.client = new SpeechClient();
     this.languageCode = languageCode;
+    this.audioOptions = audioOptions || {};
   }
 
   startStream(): void {
     this.stopStream();
 
+    const encoding = this.audioOptions.encoding || AUDIO_CONFIG.ENCODING;
+    const sampleRateHertz = this.audioOptions.sampleRateHertz || AUDIO_CONFIG.SAMPLE_RATE;
+    const model = this.audioOptions.model || 'phone_call';
+
     const request = {
       config: {
-        encoding: AUDIO_CONFIG.ENCODING as 'MULAW',
-        sampleRateHertz: AUDIO_CONFIG.SAMPLE_RATE,
+        encoding: encoding as 'MULAW' | 'LINEAR16',
+        sampleRateHertz,
         languageCode: this.languageCode,
         enableAutomaticPunctuation: true,
-        model: 'phone_call',
+        model,
       },
       interimResults: true,
     };

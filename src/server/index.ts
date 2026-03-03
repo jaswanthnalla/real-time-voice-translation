@@ -3,10 +3,15 @@ import { app } from './app';
 import { config } from '../config';
 import { logger } from '../utils/logger';
 import { setupWebSocketServer } from './websocket';
+import { setupSocketIOServer } from './socketio';
 
 const server = http.createServer(app);
 
+// Twilio Media Streams (raw WebSocket at /media-stream)
 setupWebSocketServer(server);
+
+// Browser-based sessions (Socket.IO)
+setupSocketIOServer(server);
 
 function shutdown(signal: string): void {
   logger.info(`Received ${signal}, shutting down gracefully...`);

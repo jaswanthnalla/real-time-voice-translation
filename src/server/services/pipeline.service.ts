@@ -1,22 +1,26 @@
 import { EventEmitter } from 'events';
-import { STTService } from './stt.service';
+import { STTService, STTAudioOptions } from './stt.service';
 import { TranslationService } from './translation.service';
 import { TTSService } from './tts.service';
 import { logger } from '../../utils/logger';
 import { translationDuration } from '../../utils/metrics';
 import { PipelineConfig, STTResult } from '../../types';
 
+export interface ExtendedPipelineConfig extends PipelineConfig {
+  audioOptions?: STTAudioOptions;
+}
+
 export class PipelineService extends EventEmitter {
   private sttService: STTService;
   private translationService: TranslationService;
   private ttsService: TTSService;
-  private config: PipelineConfig;
+  private config: ExtendedPipelineConfig;
   private isProcessing: boolean = false;
 
-  constructor(pipelineConfig: PipelineConfig) {
+  constructor(pipelineConfig: ExtendedPipelineConfig) {
     super();
     this.config = pipelineConfig;
-    this.sttService = new STTService(pipelineConfig.sourceLang);
+    this.sttService = new STTService(pipelineConfig.sourceLang, pipelineConfig.audioOptions);
     this.translationService = new TranslationService();
     this.ttsService = new TTSService();
 
