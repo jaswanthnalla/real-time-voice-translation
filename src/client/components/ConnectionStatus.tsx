@@ -7,6 +7,6 @@ interface Props {
 export const ConnectionStatus: React.FC<Props> = ({ connected }) => (
   <div className={`connection-status ${connected ? 'connected' : 'disconnected'}`}>
     <span className="status-dot" />
-    {connected ? 'Connected' : 'Disconnected'}
+    <span className="status-label">{connected ? 'Live' : 'Offline'}</span>
   </div>
 );

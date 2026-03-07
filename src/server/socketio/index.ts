@@ -1,5 +1,6 @@
 import http from 'http';
 import { Server, Socket } from 'socket.io';
+import { config } from '../../config';
 import { logger } from '../../utils/logger';
 import { websocketConnectionsGauge } from '../../utils/metrics';
 import { sessionService } from '../services/session.service';
@@ -19,7 +20,7 @@ interface AudioChunkPayload {
 
 export function setupSocketIOServer(server: http.Server): Server {
   const io = new Server(server, {
-    cors: { origin: '*', methods: ['GET', 'POST'] },
+    cors: { origin: config.cors.origin, methods: ['GET', 'POST'] },
     transports: ['websocket', 'polling'],
   });
 

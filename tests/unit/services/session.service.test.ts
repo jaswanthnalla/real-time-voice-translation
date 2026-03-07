@@ -136,6 +136,256 @@ describe('SessionService', () => {
     });
   });
 
+  describe('getByCallSid', () => {
+    it('should find session by callSid', () => {
+      const session = sessionService.create({ sourceLang: 'en', targetLang: 'es' });
+      sessionService.update(session.id, { callSid: 'CA123' });
+
+      const found = sessionService.getByCallSid('CA123');
+      expect(found).toBeDefined();
+      expect(found!.id).toBe(session.id);
+    });
+
+    it('should return undefined for unknown callSid', () => {
+      expect(sessionService.getByCallSid('nonexistent')).toBeUndefined();
+    });
+  });
+
+  describe('update', () => {
+    it('should update session fields', () => {
+      const session = sessionService.create({ sourceLang: 'en', targetLang: 'es' });
+      const updated = sessionService.update(session.id, { callSid: 'CA456', streamSid: 'MZ789' });
+
+      expect(updated).toBeDefined();
+      expect(updated!.callSid).toBe('CA456');
+      expect(updated!.streamSid).toBe('MZ789');
+    });
+
+    it('should return undefined for unknown session', () => {
+      expect(sessionService.update('nonexistent', { callSid: 'CA' })).toBeUndefined();
+    });
+
+    it('should update the updatedAt timestamp', () => {
+      const session = sessionService.create({ sourceLang: 'en', targetLang: 'es' });
+      const originalUpdatedAt = session.updatedAt;
+
+      // Small delay to ensure timestamps differ
+      const updated = sessionService.update(session.id, { callSid: 'CA' });
+      expect(updated!.updatedAt.getTime()).toBeGreaterThanOrEqual(originalUpdatedAt.getTime());
+    });
+  });
+
+  describe('complete with DB and summary', () => {
+    it('should return undefined for unknown session', () => {
+      expect(sessionService.complete('nonexistent')).toBeUndefined();
+    });
+
+    it('should persist to DB when connected', () => {
+      const { db } = require('../../../src/server/services/database.service');
+      db.isConnected.mockReturnValue(true);
+
+      const session = sessionService.create({ sourceLang: 'en', targetLang: 'es' });
+      sessionService.complete(session.id);
+
+      expect(db.query).toHaveBeenCalled();
+      db.isConnected.mockReturnValue(false);
+    });
+
+    it('should generate summary when available and transcripts exist', () => {
+      const { db } = require('../../../src/server/services/database.service');
+      const { summaryService: mockSummary } = require('../../../src/server/services/summary.service');
+      db.isConnected.mockReturnValue(false);
+      mockSummary.isAvailable.mockReturnValue(true);
+
+      const session = sessionService.create({ sourceLang: 'en', targetLang: 'es' });
+      sessionService.addTranscript(session.id, {
+        timestamp: new Date(),
+        speaker: 'caller',
+        originalText: 'Hello',
+        translatedText: 'Hola',
+        sourceLang: 'en',
+        targetLang: 'es',
+      });
+      sessionService.complete(session.id);
+
+      expect(mockSummary.generateSummary).toHaveBeenCalled();
+      mockSummary.isAvailable.mockReturnValue(false);
+    });
+  });
+
+  describe('addTranscript with DB', () => {
+    it('should persist to DB when connected', () => {
+      const { db } = require('../../../src/server/services/database.service');
+      db.isConnected.mockReturnValue(true);
+
+      const session = sessionService.create({ sourceLang: 'en', targetLang: 'es' });
+      sessionService.addTranscript(session.id, {
+        timestamp: new Date(),
+        speaker: 'caller',
+        originalText: 'Test',
+        translatedText: 'Prueba',
+        sourceLang: 'en',
+        targetLang: 'es',
+      });
+
+      expect(db.query).toHaveBeenCalled();
+      db.isConnected.mockReturnValue(false);
+    });
+
+    it('should ignore addTranscript for unknown session', () => {
+      sessionService.addTranscript('nonexistent', {
+        timestamp: new Date(),
+        speaker: 'caller',
+        originalText: 'Test',
+        translatedText: 'Prueba',
+        sourceLang: 'en',
+        targetLang: 'es',
+      });
+      // Should not throw
+    });
+  });
+
+  describe('listFromDb', () => {
+    it('should fallback to in-memory list when DB not connected', async () => {
+      const { db } = require('../../../src/server/services/database.service');
+      db.isConnected.mockReturnValue(false);
+
+      sessionService.create({ sourceLang: 'en', targetLang: 'es' });
+      const sessions = await sessionService.listFromDb();
+      expect(sessions).toHaveLength(1);
+    });
+
+    it('should query DB when connected', async () => {
+      const { db } = require('../../../src/server/services/database.service');
+      db.isConnected.mockReturnValue(true);
+      db.query.mockResolvedValue({
+        rows: [
+          {
+            id: 'db-1',
+            source_language: 'en',
+            target_language: 'fr',
+            status: 'completed',
+            start_time: '2026-01-01T00:00:00Z',
+            end_time: '2026-01-01T00:05:00Z',
+            transcript_count: '3',
+          },
+        ],
+      });
+
+      const sessions = await sessionService.listFromDb();
+      expect(sessions).toHaveLength(1);
+      expect(sessions[0].id).toBe('db-1');
+      expect(sessions[0].transcriptCount).toBe(3);
+      expect(sessions[0].duration).toBeGreaterThan(0);
+
+      db.isConnected.mockReturnValue(false);
+    });
+
+    it('should fallback to in-memory list on DB error', async () => {
+      const { db } = require('../../../src/server/services/database.service');
+      db.isConnected.mockReturnValue(true);
+      db.query.mockRejectedValue(new Error('DB connection lost'));
+
+      const sessions = await sessionService.listFromDb();
+      expect(Array.isArray(sessions)).toBe(true);
+
+      db.isConnected.mockReturnValue(false);
+    });
+  });
+
+  describe('getSummary', () => {
+    it('should return null when DB not connected', async () => {
+      const { db } = require('../../../src/server/services/database.service');
+      db.isConnected.mockReturnValue(false);
+
+      const result = await sessionService.getSummary('test-id');
+      expect(result).toBeNull();
+    });
+
+    it('should return summary from DB', async () => {
+      const { db } = require('../../../src/server/services/database.service');
+      db.isConnected.mockReturnValue(true);
+      db.query.mockResolvedValue({
+        rows: [{
+          summary: 'Test summary',
+          key_points: '["point1","point2"]',
+          action_items: '["action1"]',
+          sentiment: 'positive',
+        }],
+      });
+
+      const result = await sessionService.getSummary('test-id');
+      expect(result).not.toBeNull();
+      expect(result!.summary).toBe('Test summary');
+      expect(result!.keyPoints).toEqual(['point1', 'point2']);
+      expect(result!.sentiment).toBe('positive');
+
+      db.isConnected.mockReturnValue(false);
+    });
+
+    it('should return null when no summary found', async () => {
+      const { db } = require('../../../src/server/services/database.service');
+      db.isConnected.mockReturnValue(true);
+      db.query.mockResolvedValue({ rows: [] });
+
+      const result = await sessionService.getSummary('test-id');
+      expect(result).toBeNull();
+
+      db.isConnected.mockReturnValue(false);
+    });
+
+    it('should return null on DB error', async () => {
+      const { db } = require('../../../src/server/services/database.service');
+      db.isConnected.mockReturnValue(true);
+      db.query.mockRejectedValue(new Error('query failed'));
+
+      const result = await sessionService.getSummary('test-id');
+      expect(result).toBeNull();
+
+      db.isConnected.mockReturnValue(false);
+    });
+  });
+
+  describe('delete with DB', () => {
+    it('should delete active session and decrement gauge', () => {
+      const session = sessionService.create({ sourceLang: 'en', targetLang: 'es' });
+      expect(sessionService.delete(session.id)).toBe(true);
+    });
+
+    it('should persist delete to DB when connected', () => {
+      const { db } = require('../../../src/server/services/database.service');
+      db.isConnected.mockReturnValue(true);
+
+      const session = sessionService.create({ sourceLang: 'en', targetLang: 'es' });
+      sessionService.delete(session.id);
+
+      expect(db.query).toHaveBeenCalledWith(
+        'DELETE FROM conversations WHERE id = $1',
+        [session.id]
+      );
+
+      db.isConnected.mockReturnValue(false);
+    });
+  });
+
+  describe('list with duration', () => {
+    it('should include duration for completed sessions', () => {
+      const session = sessionService.create({ sourceLang: 'en', targetLang: 'es' });
+      sessionService.complete(session.id);
+
+      const sessions = sessionService.list();
+      expect(sessions[0].duration).toBeDefined();
+      expect(sessions[0].duration).toBeGreaterThanOrEqual(0);
+    });
+
+    it('should not include duration for active sessions', () => {
+      sessionService.create({ sourceLang: 'en', targetLang: 'es' });
+
+      const sessions = sessionService.list();
+      expect(sessions[0].duration).toBeUndefined();
+    });
+  });
+
   describe('getActiveCount', () => {
     it('should count active sessions', () => {
       sessionService.create({ sourceLang: 'en', targetLang: 'es' });
