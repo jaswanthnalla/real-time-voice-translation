@@ -4,10 +4,13 @@ databases:
     databaseName: voicetranslation
     user: vtuser
 
-  - name: voice-translation-redis
-    plan: free
-
 services:
+  - type: redis
+    name: voice-translation-redis
+    plan: free
+    maxmemoryPolicy: allkeys-lru
+    ipAllowList: []
+
   - type: web
     name: voice-translation
     runtime: node
