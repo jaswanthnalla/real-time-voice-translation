@@ -1,0 +1,76 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: voice-translation
+  labels:
+    app: voice-translation
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: voice-translation
+  template:
+    metadata:
+      labels:
+        app: voice-translation
+    spec:
+      containers:
+        - name: voice-translation
+          image: voice-translation:latest
+          ports:
+            - containerPort: 3001
+              name: http
+          env:
+            - name: NODE_ENV
+              value: "production"
+            - name: PORT
+              value: "3001"
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: voice-translation-secrets
+                  key: database-url
+            - name: REDIS_URL
+              valueFrom:
+                secretKeyRef:
+                  name: voice-translation-secrets
+                  key: redis-url
+            - name: JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: voice-translation-secrets
+                  key: jwt-secret
+            - name: TWILIO_ACCOUNT_SID
+              valueFrom:
+                secretKeyRef:
+                  name: voice-translation-secrets
+                  key: twilio-account-sid
+            - name: TWILIO_AUTH_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: voice-translation-secrets
+                  key: twilio-auth-token
+            - name: GOOGLE_CLOUD_PROJECT_ID
+              valueFrom:
+                secretKeyRef:
+                  name: voice-translation-secrets
+                  key: google-project-id
+          resources:
+            requests:
+              memory: "256Mi"
+              cpu: "250m"
+            limits:
+              memory: "512Mi"
+              cpu: "500m"
+          readinessProbe:
+            httpGet:
+              path: /health/ready
+              port: 3001
+            initialDelaySeconds: 10
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /health/live
+              port: 3001
+            initialDelaySeconds: 15
+            periodSeconds: 10

@@ -1,0 +1,12 @@
+{
+  "logging": {
+    "level": "warn"
+  },
+  "rateLimit": {
+    "windowMs": 60000,
+    "max": 60
+  },
+  "metrics": {
+    "enabled": true
+  }
+}

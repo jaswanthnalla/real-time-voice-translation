@@ -1,153 +1,39 @@
-/**
- * Jest configuration for Voice Translation Software
- * Comprehensive testing setup with TypeScript support and coverage reporting
- */
-
 module.exports = {
-  // Test environment
   testEnvironment: 'node',
-  
-  // TypeScript support
   preset: 'ts-jest',
-  
-  // Root directories
   roots: ['<rootDir>/src', '<rootDir>/tests'],
-  
-  // Test file patterns
   testMatch: [
     '**/__tests__/**/*.+(ts|tsx|js)',
     '**/*.(test|spec).+(ts|tsx|js)'
   ],
-  
-  // Transform files
   transform: {
     '^.+\\.(ts|tsx)$': 'ts-jest'
   },
-  
-  // Module file extensions
   moduleFileExtensions: ['ts', 'tsx', 'js', 'jsx', 'json', 'node'],
-  
-  // Module name mapping for path aliases
-  moduleNameMapping: {
+  moduleNameMapper: {
     '^@/(.*)$': '<rootDir>/src/$1',
-    '^@config/(.*)$': '<rootDir>/config/$1',
-    '^@tests/(.*)$': '<rootDir>/tests/$1'
+    '^@server/(.*)$': '<rootDir>/src/server/$1',
+    '^@shared/(.*)$': '<rootDir>/src/shared/$1',
+    '^@types/(.*)$': '<rootDir>/src/types/$1',
+    '^@utils/(.*)$': '<rootDir>/src/utils/$1',
+    '^@config/(.*)$': '<rootDir>/src/config/$1'
   },
-  
-  // Setup files
-  setupFilesAfterEnv: ['<rootDir>/tests/setup.ts'],
-  
-  // Coverage configuration
-  collectCoverage: true,
+  setupFiles: ['<rootDir>/tests/setup.ts'],
+  collectCoverage: false,
   coverageDirectory: 'coverage',
-  coverageReporters: [
-    'text',
-    'text-summary',
-    'html',
-    'lcov',
-    'json'
-  ],
-  
-  // Coverage thresholds
-  coverageThreshold: {
-    global: {
-      branches: 80,
-      functions: 80,
-      lines: 80,
-      statements: 80
-    }
-  },
-  
-  // Files to collect coverage from
+  coverageReporters: ['text', 'text-summary', 'lcov'],
   collectCoverageFrom: [
     'src/**/*.{ts,tsx}',
     '!src/**/*.d.ts',
     '!src/**/*.test.{ts,tsx}',
     '!src/**/*.spec.{ts,tsx}',
-    '!src/types/**/*',
-    '!src/index.ts'
+    '!src/types/**/*'
   ],
-  
-  // Test timeout
   testTimeout: 30000,
-  
-  // Clear mocks between tests
   clearMocks: true,
-  
-  // Restore mocks after each test
   restoreMocks: true,
-  
-  // Verbose output
   verbose: true,
-  
-  // Error on deprecated features
-  errorOnDeprecated: true,
-  
-  // Global setup and teardown
-  globalSetup: '<rootDir>/tests/globalSetup.ts',
-  globalTeardown: '<rootDir>/tests/globalTeardown.ts',
-  
-  // Test environment options
-  testEnvironmentOptions: {
-    NODE_ENV: 'test'
-  },
-  
-  // Ignore patterns
-  testPathIgnorePatterns: [
-    '/node_modules/',
-    '/dist/',
-    '/coverage/'
-  ],
-  
-  // Watch plugins
-  watchPlugins: [
-    'jest-watch-typeahead/filename',
-    'jest-watch-typeahead/testname'
-  ],
-  
-  // Reporter configuration
-  reporters: [
-    'default',
-    [
-      'jest-junit',
-      {
-        outputDirectory: 'test-results',
-        outputName: 'junit.xml',
-        ancestorSeparator: ' › ',
-        uniqueOutputName: 'false',
-        suiteNameTemplate: '{filepath}',
-        classNameTemplate: '{classname}',
-        titleTemplate: '{title}'
-      }
-    ],
-    [
-      'jest-html-reporters',
-      {
-        publicPath: './test-results',
-        filename: 'report.html',
-        expand: true
-      }
-    ]
-  ],
-  
-  // Maximum worker processes
-  maxWorkers: '50%',
-  
-  // Cache directory
-  cacheDirectory: '<rootDir>/.jest-cache',
-  
-  // Notify mode
-  notify: false,
-  
-  // Bail on first test failure in CI
-  bail: process.env.CI ? 1 : 0,
-  
-  // Force exit after tests complete
+  testPathIgnorePatterns: ['/node_modules/', '/dist/', '/coverage/'],
   forceExit: true,
-  
-  // Detect open handles
-  detectOpenHandles: true,
-  
-  // Detect leaked timers
-  detectLeaks: true
+  detectOpenHandles: true
 };

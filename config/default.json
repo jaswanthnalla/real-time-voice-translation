@@ -1,0 +1,28 @@
+{
+  "server": {
+    "port": 3001,
+    "host": "0.0.0.0"
+  },
+  "audio": {
+    "sampleRate": 8000,
+    "channels": 1,
+    "encoding": "MULAW",
+    "chunkDurationMs": 20
+  },
+  "translation": {
+    "defaultSourceLang": "en",
+    "defaultTargetLang": "es",
+    "cacheTtl": 3600,
+    "maxTextLength": 5000
+  },
+  "rateLimit": {
+    "windowMs": 60000,
+    "max": 100
+  },
+  "logging": {
+    "level": "info"
+  },
+  "metrics": {
+    "enabled": true
+  }
+}
