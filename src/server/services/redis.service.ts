@@ -9,6 +9,11 @@ class RedisService {
   constructor() {
     this.client = createClient({
       url: config.redis.url,
+      socket: {
+        // Disable automatic reconnection so connect() fails fast when Redis is unavailable
+        reconnectStrategy: false,
+        connectTimeout: 5000,
+      },
     }) as RedisClientType;
 
     this.client.on('error', (err: Error) => {
