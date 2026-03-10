@@ -17,11 +17,8 @@ class RedisService {
     }) as RedisClientType;
 
     this.client.on('error', (err: Error) => {
-      // Only log at debug level after the initial connection attempt to avoid log spam
-      if (this.connected) {
-        logger.error('Redis client error', { error: err.message });
-        this.connected = false;
-      }
+      logger.error('Redis client error', { error: err.message });
+      this.connected = false;
     });
 
     this.client.on('ready', () => {
