@@ -17,7 +17,7 @@ export const AudioWaveform: React.FC<Props> = ({ isActive, barCount = 5 }) => {
     for (let i = 0; i < bars.length; i++) {
       const bar = bars[i] as HTMLDivElement;
       const animate = () => {
-        const height = isActive ? 8 + Math.random() * 24 : 4;
+        const height = isActive ? 6 + Math.random() * 18 : 3;
         bar.style.height = `${height}px`;
       };
       animate();
@@ -28,13 +28,9 @@ export const AudioWaveform: React.FC<Props> = ({ isActive, barCount = 5 }) => {
   }, [isActive]);
 
   return (
-    <div className="audio-waveform" ref={barsRef}>
+    <div className="waveform" ref={barsRef}>
       {Array.from({ length: barCount }, (_, i) => (
-        <div
-          key={i}
-          className={`wave-bar ${isActive ? 'active' : ''}`}
-          style={{ animationDelay: `${i * 0.1}s` }}
-        />
+        <div key={i} className="waveform-bar" />
       ))}
     </div>
   );
