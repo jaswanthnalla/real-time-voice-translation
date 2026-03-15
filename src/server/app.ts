@@ -17,8 +17,11 @@ const app = express();
 // Correlation IDs for request tracing
 app.use(correlationMiddleware);
 
-// Security
-app.use(helmet());
+// Security — allow inline scripts/styles for React and speech APIs
+app.use(helmet({
+  contentSecurityPolicy: false,
+  crossOriginEmbedderPolicy: false,
+}));
 app.use(cors({ origin: config.cors.origin }));
 
 // Parsing
@@ -53,13 +56,12 @@ app.use(
 // Routes
 app.use(routes);
 
-// Serve static client files in production
-if (config.env === 'production') {
-  app.use(express.static(path.join(__dirname, '../client')));
-  app.get('*', (_req, res) => {
-    res.sendFile(path.join(__dirname, '../client/index.html'));
-  });
-}
+// Serve static client files
+const clientDir = path.join(__dirname, '../client');
+app.use(express.static(clientDir));
+app.get('*', (_req, res) => {
+  res.sendFile(path.join(clientDir, 'index.html'));
+});
 
 // Error handling (must be last)
 app.use(errorHandler);
