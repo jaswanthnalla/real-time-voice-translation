@@ -48,36 +48,32 @@ export const CallView: React.FC<Props> = ({
   };
 
   return (
-    <main className="app-main">
+    <main className="call">
       {/* Room info bar */}
-      <div className="call-header">
-        <div className="room-info">
-          <span className="room-label">Room</span>
-          <button className="room-code-btn" onClick={copyCode} title="Click to copy room code">
+      <div className="call-bar">
+        <div className="room-tag">
+          <span className="room-tag-label">Room</span>
+          <button className="room-tag-code" onClick={copyCode} title="Copy room code">
             {roomCode}
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <rect x="9" y="9" width="13" height="13" rx="2" ry="2" />
-              <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
-            </svg>
           </button>
         </div>
 
-        <div className="call-participants">
+        <div className="partner-info">
           {partner ? (
-            <div className="participant-badge connected-badge">
-              <span className="participant-dot connected-dot" />
-              {partner.nickname} ({langName(partner.language)})
-            </div>
+            <>
+              <span className="partner-dot online" />
+              <span className="partner-name">{partner.nickname} ({langName(partner.language)})</span>
+            </>
           ) : (
-            <div className="participant-badge waiting-badge">
-              <span className="participant-dot waiting-dot" />
-              Waiting for partner...
-            </div>
+            <>
+              <span className="partner-dot waiting" />
+              <span className="partner-name">Waiting for partner...</span>
+            </>
           )}
         </div>
 
         <button className="leave-btn" onClick={onLeaveRoom}>
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
             <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" />
             <polyline points="16 17 21 12 16 7" />
             <line x1="21" y1="12" x2="9" y2="12" />
@@ -87,50 +83,50 @@ export const CallView: React.FC<Props> = ({
       </div>
 
       {/* Auto-speak toggle */}
-      <div className="call-controls">
+      <div className="toggle-row">
         <label className="toggle-label">
           <input
             type="checkbox"
             checked={autoSpeak}
             onChange={onToggleAutoSpeak}
-            className="toggle-input"
+            className="toggle-checkbox"
           />
-          <span className="toggle-switch" />
+          <span className="toggle-track" />
           Auto-speak translations
         </label>
       </div>
 
       {/* Transcript area */}
-      <div className="call-transcript">
+      <div className="transcript">
         {transcript.length === 0 && !interimText ? (
-          <div className="transcript-view empty">
-            <div className="empty-icon">
-              <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" opacity="0.3">
+          <div className="transcript-empty">
+            <div className="transcript-empty-icon">
+              <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
                 <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
               </svg>
             </div>
-            <p>{partner ? 'Start speaking! Translations will appear here.' : 'Share the room code and wait for your partner to join.'}</p>
-            <p className="empty-hint">Both of you can speak at the same time</p>
+            <p>{partner ? 'Start speaking! Translations appear here.' : 'Share the room code and wait for your partner.'}</p>
+            <p className="hint">Both of you can speak at the same time</p>
           </div>
         ) : (
-          <div className="transcript-view">
+          <>
             {transcript.map((entry) => {
               const isMe = entry.senderId === myId;
               return (
-                <div key={entry.id} className={`chat-bubble ${isMe ? 'mine' : 'theirs'}`}>
-                  <div className="bubble-header">
-                    <span className="bubble-sender">{entry.senderNickname}</span>
-                    <time className="bubble-time">
+                <div key={entry.id} className={`bubble ${isMe ? 'mine' : 'theirs'}`}>
+                  <div className="bubble-head">
+                    <span className="bubble-who">{entry.senderNickname}</span>
+                    <time className="bubble-when">
                       {new Date(entry.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
                     </time>
                   </div>
-                  <div className="bubble-original">
-                    <span className="lang-badge source">{langName(entry.sourceLang)}</span>
+                  <div className="bubble-orig">
+                    <span className="lang-tag src">{langName(entry.sourceLang)}</span>
                     {entry.originalText}
                   </div>
                   {entry.sourceLang !== entry.targetLang && (
-                    <div className="bubble-translated">
-                      <span className="lang-badge target">{langName(entry.targetLang)}</span>
+                    <div className="bubble-trans">
+                      <span className="lang-tag tgt">{langName(entry.targetLang)}</span>
                       {entry.translatedText}
                     </div>
                   )}
@@ -139,11 +135,11 @@ export const CallView: React.FC<Props> = ({
             })}
 
             {interimText && (
-              <div className="chat-bubble interim-bubble">
-                <div className="bubble-header">
-                  <span className="bubble-sender">{interimSender || '...'}</span>
+              <div className="bubble interim">
+                <div className="bubble-head">
+                  <span className="bubble-who">{interimSender || '...'}</span>
                 </div>
-                <div className="bubble-original interim-content">
+                <div className="bubble-orig">
                   <span className="interim-dot" />
                   {interimText}
                 </div>
@@ -151,27 +147,27 @@ export const CallView: React.FC<Props> = ({
             )}
 
             <div ref={bottomRef} />
-          </div>
+          </>
         )}
       </div>
 
-      {/* Mic button and actions */}
-      <div className="call-bottom">
-        <div className="mic-container">
-          {isListening && <div className="mic-ripple" />}
-          {isListening && <div className="mic-ripple delay" />}
+      {/* Mic button and status */}
+      <div className="call-controls">
+        <div className="mic-area">
+          {isListening && <div className="mic-ring" />}
+          {isListening && <div className="mic-ring d" />}
           <button
-            className={`mic-btn ${isListening ? 'recording' : ''}`}
+            className={`mic-btn ${isListening ? 'active' : ''}`}
             onClick={isListening ? onStopListening : onStartListening}
             disabled={!partner}
             aria-label={isListening ? 'Stop listening' : 'Start listening'}
           >
             {isListening ? (
-              <svg width="28" height="28" viewBox="0 0 24 24" fill="currentColor">
+              <svg width="24" height="24" viewBox="0 0 24 24" fill="currentColor">
                 <rect x="6" y="6" width="12" height="12" rx="2" />
               </svg>
             ) : (
-              <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                 <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z" />
                 <path d="M19 10v2a7 7 0 0 1-14 0v-2" />
                 <line x1="12" y1="19" x2="12" y2="23" />
@@ -181,26 +177,26 @@ export const CallView: React.FC<Props> = ({
           </button>
         </div>
 
-        <div className="panel-status">
+        <div className="mic-status">
           {isListening ? (
             <>
               <AudioWaveform isActive={true} barCount={7} />
-              <span className="status-text recording-text">Listening... tap to stop</span>
+              <span className="mic-status-text recording">Listening... tap to stop</span>
             </>
           ) : (
-            <span className="status-text">
-              {partner ? 'Tap microphone to start speaking' : 'Waiting for partner to join...'}
+            <span className="mic-status-text">
+              {partner ? 'Tap microphone to speak' : 'Waiting for partner...'}
             </span>
           )}
         </div>
 
         {transcript.length > 0 && (
-          <button className="action-btn clear-btn" onClick={onClearTranscript}>
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+          <button className="clear-btn" onClick={onClearTranscript}>
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
               <polyline points="3 6 5 6 21 6" />
               <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
             </svg>
-            Clear Chat
+            Clear
           </button>
         )}
       </div>
