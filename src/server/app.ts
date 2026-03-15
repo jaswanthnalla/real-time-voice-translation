@@ -22,7 +22,10 @@ app.use(helmet({
   contentSecurityPolicy: false,
   crossOriginEmbedderPolicy: false,
 }));
-app.use(cors({ origin: config.cors.origin }));
+// Sanitize CORS origin — strip quotes, whitespace, and invalid chars
+const rawOrigin = config.cors.origin.trim().replace(/^["']|["']$/g, '');
+const corsOrigin = rawOrigin && /^https?:\/\//.test(rawOrigin) ? rawOrigin : true;
+app.use(cors({ origin: corsOrigin }));
 
 // Parsing
 app.use(express.json({ limit: '10mb' }));
