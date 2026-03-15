@@ -1,12 +1,11 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import Joi from 'joi';
-import { TranslationService } from '../services/translation.service';
+import { freeTranslation } from '../services/free-translation.service';
 import { validate } from '../middleware/validation.middleware';
 import { SUPPORTED_LANGUAGES } from '../../shared/constants';
 import { ApiResponse } from '../../types';
 
 const router = Router();
-const translationService = new TranslationService();
 
 const languageCodes = Object.keys(SUPPORTED_LANGUAGES);
 
@@ -42,7 +41,7 @@ router.post(
   async (req: Request, res: Response, next: NextFunction) => {
     try {
       const { text, sourceLang, targetLang } = req.body;
-      const result = await translationService.translate(text, sourceLang, targetLang);
+      const result = await freeTranslation.translate(text, sourceLang, targetLang);
 
       const response: ApiResponse = {
         success: true,
