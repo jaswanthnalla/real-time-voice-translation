@@ -1,9 +1,25 @@
 import { useState, useRef, useCallback, useEffect } from 'react';
 import { io, Socket } from 'socket.io-client';
-import { AudioRecorder, AudioPlayer } from '../services/audio';
+// Web Speech API language code mapping (BCP 47 codes)
+const SPEECH_LANG_MAP: Record<string, string> = {
+  en: 'en-US',
+  es: 'es-ES',
+  fr: 'fr-FR',
+  de: 'de-DE',
+  it: 'it-IT',
+  pt: 'pt-BR',
+  ru: 'ru-RU',
+  zh: 'zh-CN',
+  ja: 'ja-JP',
+  ko: 'ko-KR',
+  ar: 'ar-SA',
+  hi: 'hi-IN',
+};
 
-interface TranscriptEntry {
+export interface TranscriptEntry {
   id: string;
+  senderId: string;
+  senderNickname: string;
   originalText: string;
   translatedText: string;
   sourceLang: string;
@@ -11,18 +27,42 @@ interface TranscriptEntry {
   timestamp: number;
 }
 
-export function useTranslation(sourceLang: string, targetLang: string) {
+export interface Participant {
+  id: string;
+  nickname: string;
+  language: string;
+}
+
+interface SpeechRecognitionEvent {
+  resultIndex: number;
+  results: SpeechRecognitionResultList;
+}
+
+interface SpeechRecognitionErrorEvent {
+  error: string;
+}
+
+export function useTranslation(myLanguage: string) {
   const [isConnected, setIsConnected] = useState(false);
-  const [isRecording, setIsRecording] = useState(false);
-  const [isPlaying, setIsPlaying] = useState(false);
+  const [isListening, setIsListening] = useState(false);
+  const [isSpeaking, setIsSpeaking] = useState(false);
+  const [roomCode, setRoomCode] = useState<string | null>(null);
+  const [myId, setMyId] = useState<string | null>(null);
+  const [participants, setParticipants] = useState<Participant[]>([]);
   const [interimText, setInterimText] = useState<string | null>(null);
+  const [interimSender, setInterimSender] = useState<string | null>(null);
   const [transcript, setTranscript] = useState<TranscriptEntry[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const [autoSpeak, setAutoSpeak] = useState(true);
 
   const socketRef = useRef<Socket | null>(null);
-  const recorderRef = useRef<AudioRecorder | null>(null);
-  const playerRef = useRef<AudioPlayer | null>(null);
+  const recognitionRef = useRef<any>(null);
+  const myLanguageRef = useRef(myLanguage);
 
+  // Keep ref in sync
+  myLanguageRef.current = myLanguage;
+
+  // Initialize Socket.IO connection
   useEffect(() => {
     const socket = io(window.location.origin, {
       transports: ['polling', 'websocket'],
@@ -37,116 +77,229 @@ export function useTranslation(sourceLang: string, targetLang: string) {
       setIsConnected(false);
     });
 
-    socket.on('translation_interim', (data: { interimText: string; sourceLang: string }) => {
-      setInterimText(data.interimText);
+    socket.on('room_created', (data: { roomCode: string; userId: string }) => {
+      setRoomCode(data.roomCode);
+      setMyId(data.userId);
+      setError(null);
+    });
+
+    socket.on('room_joined', (data: { roomCode: string; userId: string; participants: Participant[] }) => {
+      setRoomCode(data.roomCode);
+      setMyId(data.userId);
+      setParticipants(data.participants);
+      setError(null);
+    });
+
+    socket.on('room_error', (data: { message: string }) => {
+      setError(data.message);
+    });
+
+    socket.on('participant_joined', (participant: Participant) => {
+      setParticipants(prev => [...prev.filter(p => p.id !== participant.id), participant]);
+    });
+
+    socket.on('participant_left', (data: { id: string; nickname: string }) => {
+      setParticipants(prev => prev.filter(p => p.id !== data.id));
+    });
+
+    socket.on('interim_transcript', (data: {
+      senderId: string;
+      senderNickname: string;
+      originalText: string;
+      sourceLang: string;
+    }) => {
+      setInterimText(data.originalText);
+      setInterimSender(data.senderNickname);
     });
 
     socket.on('translation_result', (data: {
+      senderId: string;
+      senderNickname: string;
       originalText: string;
       translatedText: string;
       sourceLang: string;
       targetLang: string;
-      audioData?: string;
+      timestamp: number;
     }) => {
-      // Clear interim text when final result arrives
       setInterimText(null);
+      setInterimSender(null);
 
-      setTranscript((prev) => [
+      setTranscript(prev => [
         ...prev,
         {
-          id: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
+          id: `${data.timestamp}-${Math.random().toString(36).slice(2)}`,
+          senderId: data.senderId,
+          senderNickname: data.senderNickname,
           originalText: data.originalText,
           translatedText: data.translatedText,
           sourceLang: data.sourceLang,
           targetLang: data.targetLang,
-          timestamp: Date.now(),
+          timestamp: data.timestamp,
         },
       ]);
 
-      // Play translated audio if available
-      if (data.audioData && playerRef.current) {
-        playTranslatedAudio(data.audioData);
+      // Auto-speak translated text for the OTHER user (not the sender)
+      if (data.senderId !== socket.id && data.sourceLang !== myLanguageRef.current) {
+        speakText(data.translatedText, myLanguageRef.current);
       }
     });
 
-    socket.on('error_message', (data: { message: string }) => {
+    socket.on('translation_error', (data: { message: string }) => {
       setError(data.message);
     });
 
     socketRef.current = socket;
 
-    const player = new AudioPlayer();
-    player.setCallbacks(
-      () => setIsPlaying(true),
-      () => setIsPlaying(false)
-    );
-    playerRef.current = player;
-
     return () => {
       socket.disconnect();
-      playerRef.current?.destroy();
     };
   }, []);
 
-  async function playTranslatedAudio(base64Audio: string): Promise<void> {
-    try {
-      const binaryStr = atob(base64Audio);
-      const bytes = new Uint8Array(binaryStr.length);
-      for (let i = 0; i < binaryStr.length; i++) {
-        bytes[i] = binaryStr.charCodeAt(i);
-      }
-      await playerRef.current?.play(bytes.buffer);
-    } catch (err) {
-      // Audio playback is best-effort; don't break the UI
-      console.warn('Audio playback failed:', err);
-    }
-  }
+  // Speak translated text using browser SpeechSynthesis
+  const speakText = useCallback((text: string, lang: string) => {
+    if (!autoSpeak || !text.trim()) return;
+    if (!('speechSynthesis' in window)) return;
 
-  const startRecording = useCallback(async () => {
+    // Cancel any ongoing speech
+    window.speechSynthesis.cancel();
+
+    const utterance = new SpeechSynthesisUtterance(text);
+    utterance.lang = SPEECH_LANG_MAP[lang] || lang;
+    utterance.rate = 1.0;
+    utterance.pitch = 1.0;
+    utterance.volume = 1.0;
+
+    utterance.onstart = () => setIsSpeaking(true);
+    utterance.onend = () => setIsSpeaking(false);
+    utterance.onerror = () => setIsSpeaking(false);
+
+    window.speechSynthesis.speak(utterance);
+  }, [autoSpeak]);
+
+  // Create a room
+  const createRoom = useCallback((nickname: string) => {
     const socket = socketRef.current;
     if (!socket) return;
 
-    // Same-language guard
-    if (sourceLang === targetLang) {
-      setError('Source and target languages must be different');
+    socket.emit('create_room', {
+      language: myLanguageRef.current,
+      nickname,
+    });
+  }, []);
+
+  // Join a room
+  const joinRoom = useCallback((code: string, nickname: string) => {
+    const socket = socketRef.current;
+    if (!socket) return;
+
+    socket.emit('join_room', {
+      roomCode: code,
+      language: myLanguageRef.current,
+      nickname,
+    });
+  }, []);
+
+  // Leave current room
+  const leaveRoom = useCallback(() => {
+    stopListening();
+    socketRef.current?.emit('leave_room');
+    setRoomCode(null);
+    setMyId(null);
+    setParticipants([]);
+    setTranscript([]);
+    setInterimText(null);
+    setInterimSender(null);
+    setError(null);
+  }, []);
+
+  // Start listening (Web Speech API for STT)
+  const startListening = useCallback(() => {
+    const socket = socketRef.current;
+    if (!socket || !roomCode) return;
+
+    const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+    if (!SpeechRecognition) {
+      setError('Speech recognition is not supported in this browser. Please use Chrome or Edge.');
       return;
     }
 
-    socket.emit('join_session', { sourceLang, targetLang });
+    const recognition = new SpeechRecognition();
+    recognition.continuous = true;
+    recognition.interimResults = true;
+    recognition.lang = SPEECH_LANG_MAP[myLanguageRef.current] || myLanguageRef.current;
+    recognition.maxAlternatives = 1;
+
+    recognition.onresult = (event: SpeechRecognitionEvent) => {
+      let interimTranscript = '';
+      let finalTranscript = '';
+
+      for (let i = event.resultIndex; i < event.results.length; i++) {
+        const result = event.results[i];
+        const text = result[0].transcript;
+
+        if (result.isFinal) {
+          finalTranscript += text;
+        } else {
+          interimTranscript += text;
+        }
+      }
+
+      // Send interim text for real-time display
+      if (interimTranscript) {
+        socket.emit('speech_text', { text: interimTranscript, isFinal: false });
+      }
+
+      // Send final text for translation
+      if (finalTranscript) {
+        socket.emit('speech_text', { text: finalTranscript, isFinal: true });
+      }
+    };
+
+    recognition.onerror = (event: SpeechRecognitionErrorEvent) => {
+      if (event.error === 'no-speech') return; // Normal — user just isn't talking
+      if (event.error === 'aborted') return; // We stopped it intentionally
+
+      console.error('Speech recognition error:', event.error);
+      if (event.error === 'not-allowed') {
+        setError('Microphone access denied. Please allow microphone access and try again.');
+      }
+    };
+
+    recognition.onend = () => {
+      // Auto-restart if still supposed to be listening
+      if (recognitionRef.current === recognition) {
+        try {
+          recognition.start();
+        } catch {
+          // Already started or page closed
+        }
+      }
+    };
 
     try {
-      const recorder = new AudioRecorder();
-      recorderRef.current = recorder;
-
-      await recorder.start((audioBlob: Blob) => {
-        const reader = new FileReader();
-        reader.onloadend = () => {
-          const base64 = (reader.result as string).split(',')[1];
-          socket.emit('audio_chunk', {
-            audioData: base64,
-            sourceLang,
-            targetLang,
-          });
-        };
-        reader.readAsDataURL(audioBlob);
-      });
-
-      setIsRecording(true);
+      recognition.start();
+      recognitionRef.current = recognition;
+      setIsListening(true);
       setError(null);
     } catch (err) {
-      const message = (err as Error).name === 'NotAllowedError'
-        ? 'Microphone access denied'
-        : 'Could not start recording';
-      setError(message);
+      setError('Could not start speech recognition.');
     }
-  }, [sourceLang, targetLang]);
+  }, [roomCode]);
 
-  const stopRecording = useCallback(() => {
-    recorderRef.current?.stop();
-    recorderRef.current = null;
-    socketRef.current?.emit('leave_session');
-    setIsRecording(false);
+  // Stop listening
+  const stopListening = useCallback(() => {
+    if (recognitionRef.current) {
+      const recognition = recognitionRef.current;
+      recognitionRef.current = null; // Clear ref before stopping to prevent auto-restart
+      try {
+        recognition.stop();
+      } catch {
+        // Already stopped
+      }
+    }
+    setIsListening(false);
     setInterimText(null);
+    setInterimSender(null);
   }, []);
 
   const clearTranscript = useCallback(() => {
@@ -155,13 +308,22 @@ export function useTranslation(sourceLang: string, targetLang: string) {
 
   return {
     isConnected,
-    isRecording,
-    isPlaying,
+    isListening,
+    isSpeaking,
+    roomCode,
+    myId,
+    participants,
     interimText,
+    interimSender,
     transcript,
     error,
-    startRecording,
-    stopRecording,
+    autoSpeak,
+    setAutoSpeak,
+    createRoom,
+    joinRoom,
+    leaveRoom,
+    startListening,
+    stopListening,
     clearTranscript,
   };
 }
