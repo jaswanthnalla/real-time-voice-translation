@@ -29,6 +29,13 @@ const interimState = new Map<string, {
   generation: number;
 }>();
 
+// Per-socket deduplication for final speech events.
+// The Web Speech API can fire multiple isFinal:true results for the
+// same phrase (browser quirk). Without dedup, each one triggers a
+// separate translation + TTS on the receiver, causing duplicate sentences.
+const lastFinal = new Map<string, { text: string; timestamp: number }>();
+const FINAL_DEDUP_WINDOW_MS = 3000;
+
 function generateRoomCode(): string {
   const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
   let code = '';
@@ -183,6 +190,17 @@ export function setupSocketIOServer(server: http.Server): Server {
       }
 
       // --- FINAL: translate and send for TTS + transcript ---
+
+      // DEDUP: The Web Speech API often fires the same final text
+      // multiple times (browser quirk). Skip exact duplicates within
+      // a 3-second window to prevent duplicate TTS + transcript.
+      const now = Date.now();
+      const prev = lastFinal.get(socket.id);
+      if (prev && prev.text === text && now - prev.timestamp < FINAL_DEDUP_WINDOW_MS) {
+        return;
+      }
+      lastFinal.set(socket.id, { text, timestamp: now });
+
       // Cancel any pending interim translation for this socket
       cleanupSocketState(socket.id);
 
@@ -236,6 +254,7 @@ export function setupSocketIOServer(server: http.Server): Server {
     socket.on('disconnect', () => {
       websocketConnectionsGauge.dec();
       cleanupSocketState(socket.id);
+      lastFinal.delete(socket.id);
       handleLeaveRoom(socket, io);
       logger.info('Client disconnected', { socketId: socket.id });
     });
