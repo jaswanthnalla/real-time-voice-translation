@@ -35,14 +35,16 @@ interface SpeechRecognitionErrorEvent {
 }
 
 /**
- * Voice-first translation hook.
+ * Live phone-call translation hook.
  *
- * The core idea: when you receive a translation from the other person,
- * SPEAK it aloud first, then show the transcript after speech ends.
- * This makes it feel like a live interpreter — you hear the translation
- * in real time, and the text record appears afterward.
+ * Cancel-and-replace model: when a new interim translation arrives,
+ * cancel whatever is currently being spoken and immediately speak the
+ * new version. This creates a continuous, overlapping feel — like a
+ * simultaneous interpreter whispering in your ear while the other
+ * person talks. Both users' mics stay on (full duplex).
  *
- * Speech queue ensures translations don't overlap — they play in order.
+ * Final translations replace the last interim speech cleanly, and
+ * the transcript entry is added only after the final speech finishes.
  */
 export function useTranslation(myLanguage: string) {
   const [isConnected, setIsConnected] = useState(false);
@@ -62,65 +64,52 @@ export function useTranslation(myLanguage: string) {
   const myLanguageRef = useRef(myLanguage);
   const autoSpeakRef = useRef(autoSpeak);
 
-  // Speech queue — translations are queued and spoken in order
-  const speechQueueRef = useRef<Array<{
-    text: string;
-    lang: string;
-    entry: TranscriptEntry;
-  }>>([]);
-  const isSpeakingRef = useRef(false);
-
-  // Pending transcript entries that are waiting for speech to finish
-  const pendingTranscriptsRef = useRef<Map<number, TranscriptEntry>>(new Map());
+  // Track the current utterance so we can cancel it on new interim
+  const currentUtteranceRef = useRef<SpeechSynthesisUtterance | null>(null);
 
   // Keep refs in sync
   myLanguageRef.current = myLanguage;
   autoSpeakRef.current = autoSpeak;
 
-  // Process the speech queue — speak the next item if idle
-  const processSpeechQueue = useCallback(() => {
-    if (isSpeakingRef.current) return;
-    if (speechQueueRef.current.length === 0) return;
-    if (!('speechSynthesis' in window)) return;
+  /**
+   * Speak text immediately, cancelling any ongoing speech.
+   * This is the core of the "cancel-and-replace" pattern:
+   * each new interim chunk interrupts the previous one,
+   * so the listener always hears the most up-to-date translation.
+   */
+  const speakNow = useCallback((text: string, lang: string, onEnd?: () => void) => {
+    if (!('speechSynthesis' in window) || !text.trim()) {
+      onEnd?.();
+      return;
+    }
 
-    const next = speechQueueRef.current.shift()!;
-    isSpeakingRef.current = true;
-    setIsSpeaking(true);
-
-    // Cancel any stale speech
+    // Cancel whatever is playing — new speech takes priority
     window.speechSynthesis.cancel();
+    currentUtteranceRef.current = null;
 
-    const utterance = new SpeechSynthesisUtterance(next.text);
-    utterance.lang = SPEECH_LANG_MAP[next.lang] || next.lang;
-    utterance.rate = 1.05; // Slightly faster for conversational feel
+    const utterance = new SpeechSynthesisUtterance(text);
+    utterance.lang = SPEECH_LANG_MAP[lang] || lang;
+    utterance.rate = 1.1; // Slightly faster for natural conversation pace
     utterance.pitch = 1.0;
     utterance.volume = 1.0;
 
+    utterance.onstart = () => {
+      setIsSpeaking(true);
+    };
+
     utterance.onend = () => {
-      isSpeakingRef.current = false;
+      currentUtteranceRef.current = null;
       setIsSpeaking(false);
-
-      // Now that speech is done, show the transcript entry
-      setTranscript(prev => [...prev, next.entry]);
-
-      // Remove from pending
-      pendingTranscriptsRef.current.delete(next.entry.timestamp);
-
-      // Process next in queue
-      processSpeechQueue();
+      onEnd?.();
     };
 
     utterance.onerror = () => {
-      isSpeakingRef.current = false;
+      currentUtteranceRef.current = null;
       setIsSpeaking(false);
-
-      // Show transcript even if speech failed
-      setTranscript(prev => [...prev, next.entry]);
-      pendingTranscriptsRef.current.delete(next.entry.timestamp);
-
-      processSpeechQueue();
+      onEnd?.();
     };
 
+    currentUtteranceRef.current = utterance;
     window.speechSynthesis.speak(utterance);
   }, []);
 
@@ -164,67 +153,64 @@ export function useTranslation(myLanguage: string) {
       setParticipants(prev => prev.filter(p => p.id !== data.id));
     });
 
-    // Interim text — typing indicator (only shown to receiver)
-    socket.on('interim_transcript', (data: {
-      senderId: string;
-      senderNickname: string;
-      originalText: string;
-      sourceLang: string;
-    }) => {
-      setInterimText(data.originalText);
-      setInterimSender(data.senderNickname);
-    });
-
     /**
-     * 'speak_translation' — voice-priority event, sent to receiver only.
-     * Queue this for immediate TTS. The transcript will arrive separately
-     * via 'translation_result' and be held until speech finishes.
+     * 'live_voice' — the core phone-call event.
+     *
+     * INTERIM (isFinal=false): cancel current speech, speak the new
+     * interim translation immediately. This creates continuous streaming
+     * — like hearing the interpreter adjust in real time.
+     *
+     * FINAL (isFinal=true): cancel interim speech, speak the clean
+     * final translation. Add transcript entry after speech finishes.
      */
-    socket.on('speak_translation', (data: {
+    socket.on('live_voice', (data: {
       senderId: string;
       senderNickname: string;
-      originalText: string;
+      text: string;
       translatedText: string;
       sourceLang: string;
       targetLang: string;
-      timestamp: number;
+      isFinal: boolean;
     }) => {
-      setInterimText(null);
-      setInterimSender(null);
+      if (data.isFinal) {
+        // Final translation — speak it cleanly and add to transcript after
+        setInterimText(null);
+        setInterimSender(null);
 
-      if (!autoSpeakRef.current || !data.translatedText.trim()) return;
+        if (autoSpeakRef.current && data.translatedText.trim()) {
+          speakNow(data.translatedText, myLanguageRef.current, () => {
+            // Transcript appears after speech ends — voice-first
+            setTranscript(prev => [
+              ...prev,
+              {
+                id: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
+                senderId: data.senderId,
+                senderNickname: data.senderNickname,
+                originalText: data.text,
+                translatedText: data.translatedText,
+                sourceLang: data.sourceLang,
+                targetLang: data.targetLang,
+                timestamp: Date.now(),
+              },
+            ]);
+          });
+        }
+      } else {
+        // Interim — show live text and speak it (cancel-and-replace)
+        setInterimText(data.translatedText);
+        setInterimSender(data.senderNickname);
 
-      const entry: TranscriptEntry = {
-        id: `${data.timestamp}-${Math.random().toString(36).slice(2)}`,
-        senderId: data.senderId,
-        senderNickname: data.senderNickname,
-        originalText: data.originalText,
-        translatedText: data.translatedText,
-        sourceLang: data.sourceLang,
-        targetLang: data.targetLang,
-        timestamp: data.timestamp,
-      };
-
-      // Mark this timestamp as pending (waiting for speech to finish)
-      pendingTranscriptsRef.current.set(data.timestamp, entry);
-
-      // Queue the speech
-      speechQueueRef.current.push({
-        text: data.translatedText,
-        lang: myLanguageRef.current,
-        entry,
-      });
-
-      processSpeechQueue();
+        if (autoSpeakRef.current && data.translatedText.trim()) {
+          speakNow(data.translatedText, myLanguageRef.current);
+        }
+      }
     });
 
     /**
-     * 'translation_result' — transcript event, sent to both users.
-     *
-     * For the SENDER: show transcript immediately (they said it, they know what it is).
-     * For the RECEIVER: if this timestamp is pending (waiting for speech), skip —
-     * the transcript will be added after TTS finishes. If autoSpeak is off or
-     * if it's the same language, show immediately.
+     * 'translation_result' — transcript event sent to BOTH users.
+     * The sender sees their own message in the transcript immediately.
+     * The receiver already got the voice via 'live_voice' above,
+     * so we only add the transcript for the sender here.
      */
     socket.on('translation_result', (data: {
       senderId: string;
@@ -235,35 +221,25 @@ export function useTranslation(myLanguage: string) {
       targetLang: string;
       timestamp: number;
     }) => {
-      setInterimText(null);
-      setInterimSender(null);
-
       const isMe = data.senderId === socket.id;
 
-      // If this is already pending in the speech queue, skip — it will be added after TTS
-      if (!isMe && pendingTranscriptsRef.current.has(data.timestamp)) {
-        return;
+      if (isMe) {
+        // Sender sees their own message immediately in transcript
+        setTranscript(prev => [
+          ...prev,
+          {
+            id: `${data.timestamp}-${Math.random().toString(36).slice(2)}`,
+            senderId: data.senderId,
+            senderNickname: data.senderNickname,
+            originalText: data.originalText,
+            translatedText: data.translatedText,
+            sourceLang: data.sourceLang,
+            targetLang: data.targetLang,
+            timestamp: data.timestamp,
+          },
+        ]);
       }
-
-      // Show transcript immediately (sender's own message, or autoSpeak is off)
-      setTranscript(prev => [
-        ...prev,
-        {
-          id: `${data.timestamp}-${Math.random().toString(36).slice(2)}`,
-          senderId: data.senderId,
-          senderNickname: data.senderNickname,
-          originalText: data.originalText,
-          translatedText: data.translatedText,
-          sourceLang: data.sourceLang,
-          targetLang: data.targetLang,
-          timestamp: data.timestamp,
-        },
-      ]);
-
-      // If receiver, autoSpeak off, and different language — speak without delaying transcript
-      if (!isMe && !autoSpeakRef.current && data.sourceLang !== myLanguageRef.current) {
-        // No speech queuing in this case, just show text
-      }
+      // Receiver's transcript is added after live_voice final speech ends
     });
 
     socket.on('translation_error', (data: { message: string }) => {
@@ -275,7 +251,7 @@ export function useTranslation(myLanguage: string) {
     return () => {
       socket.disconnect();
     };
-  }, [processSpeechQueue]);
+  }, [speakNow]);
 
   const createRoom = useCallback((nickname: string) => {
     socketRef.current?.emit('create_room', {
@@ -295,9 +271,7 @@ export function useTranslation(myLanguage: string) {
   const leaveRoom = useCallback(() => {
     stopListening();
     window.speechSynthesis?.cancel();
-    speechQueueRef.current = [];
-    pendingTranscriptsRef.current.clear();
-    isSpeakingRef.current = false;
+    currentUtteranceRef.current = null;
 
     socketRef.current?.emit('leave_room');
     setRoomCode(null);
