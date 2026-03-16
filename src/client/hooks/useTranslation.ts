@@ -35,14 +35,17 @@ interface SpeechRecognitionErrorEvent {
 }
 
 /**
- * Live phone-call translation hook.
+ * Voice translation hook — phone-call feel.
  *
- * Interim translations appear as live subtitles only (no TTS) — this
- * avoids glitchy audio from inaccurate partial speech recognition.
- * Final translations are spoken aloud first, then the transcript
- * entry appears after speech ends (voice-first).
+ * How it works:
+ * - Partner speaks → you see live translated subtitles updating in real-time
+ * - Partner pauses → final translation is spoken aloud through your speaker
+ * - After speech finishes → transcript entry appears (voice-first)
+ * - Both mics stay on — full duplex, simultaneous conversation
  *
- * Both users' mics stay on (full duplex).
+ * TTS uses a queue to prevent overlapping speech. Interim text is
+ * visual-only (subtitles) because partial speech recognition is too
+ * inaccurate for TTS.
  */
 export function useTranslation(myLanguage: string) {
   const [isConnected, setIsConnected] = useState(false);
@@ -62,52 +65,55 @@ export function useTranslation(myLanguage: string) {
   const myLanguageRef = useRef(myLanguage);
   const autoSpeakRef = useRef(autoSpeak);
 
-  // Track the current utterance so we can cancel it on new interim
-  const currentUtteranceRef = useRef<SpeechSynthesisUtterance | null>(null);
+  // Speech queue — final translations are queued and spoken in order
+  // This prevents overlapping TTS and ensures clean, sequential playback
+  const speechQueueRef = useRef<Array<{
+    text: string;
+    lang: string;
+    onDone: () => void;
+  }>>([]);
+  const isSpeakingRef = useRef(false);
+
+  // Timestamps of translations currently waiting in the speech queue.
+  // When 'translation_result' arrives for the receiver, if the timestamp
+  // is pending here, we skip adding it to transcript — it'll be added
+  // after TTS finishes via the onDone callback.
+  const pendingTimestamps = useRef<Set<number>>(new Set());
 
   // Keep refs in sync
   myLanguageRef.current = myLanguage;
   autoSpeakRef.current = autoSpeak;
 
   /**
-   * Speak text immediately, cancelling any ongoing speech.
-   * This is the core of the "cancel-and-replace" pattern:
-   * each new interim chunk interrupts the previous one,
-   * so the listener always hears the most up-to-date translation.
+   * Process the speech queue — speak the next item if idle.
+   * Each item is spoken fully before moving to the next.
    */
-  const speakNow = useCallback((text: string, lang: string, onEnd?: () => void) => {
-    if (!('speechSynthesis' in window) || !text.trim()) {
-      onEnd?.();
-      return;
-    }
+  const processQueue = useCallback(() => {
+    if (isSpeakingRef.current) return;
+    if (speechQueueRef.current.length === 0) return;
+    if (!('speechSynthesis' in window)) return;
 
-    // Cancel whatever is playing — new speech takes priority
-    window.speechSynthesis.cancel();
-    currentUtteranceRef.current = null;
+    const next = speechQueueRef.current.shift()!;
+    isSpeakingRef.current = true;
+    setIsSpeaking(true);
 
-    const utterance = new SpeechSynthesisUtterance(text);
-    utterance.lang = SPEECH_LANG_MAP[lang] || lang;
-    utterance.rate = 1.1; // Slightly faster for natural conversation pace
+    const utterance = new SpeechSynthesisUtterance(next.text);
+    utterance.lang = SPEECH_LANG_MAP[next.lang] || next.lang;
+    utterance.rate = 1.0;
     utterance.pitch = 1.0;
     utterance.volume = 1.0;
 
-    utterance.onstart = () => {
-      setIsSpeaking(true);
-    };
-
-    utterance.onend = () => {
-      currentUtteranceRef.current = null;
+    const finish = () => {
+      isSpeakingRef.current = false;
       setIsSpeaking(false);
-      onEnd?.();
+      next.onDone();
+      // Process next in queue
+      processQueue();
     };
 
-    utterance.onerror = () => {
-      currentUtteranceRef.current = null;
-      setIsSpeaking(false);
-      onEnd?.();
-    };
+    utterance.onend = finish;
+    utterance.onerror = finish;
 
-    currentUtteranceRef.current = utterance;
     window.speechSynthesis.speak(utterance);
   }, []);
 
@@ -152,74 +158,77 @@ export function useTranslation(myLanguage: string) {
     });
 
     /**
-     * 'live_voice' — the core phone-call event.
-     *
-     * INTERIM (isFinal=false): show translated text as live subtitle
-     * only — no TTS, because partial speech recognition is often
-     * inaccurate and speaking it creates glitchy choppy audio.
-     *
-     * FINAL (isFinal=true): speak the clean final translation aloud,
-     * then add transcript entry after speech finishes (voice-first).
+     * 'live_subtitle' — interim translated text from the server.
+     * Shown as a live updating subtitle so the receiver can read
+     * along in their own language while the partner is still speaking.
+     * NOT spoken aloud (interim STT is too inaccurate for TTS).
      */
-    socket.on('live_voice', (data: {
+    socket.on('live_subtitle', (data: {
       senderId: string;
       senderNickname: string;
-      text: string;
+      originalText: string;
       translatedText: string;
       sourceLang: string;
       targetLang: string;
-      isFinal: boolean;
     }) => {
-      if (data.isFinal) {
-        // Final translation — speak it, then show transcript after
-        setInterimText(null);
-        setInterimSender(null);
+      setInterimText(data.translatedText);
+      setInterimSender(data.senderNickname);
+    });
 
-        if (autoSpeakRef.current && data.translatedText.trim()) {
-          speakNow(data.translatedText, myLanguageRef.current, () => {
-            // Transcript appears after speech ends — voice-first
-            setTranscript(prev => [
-              ...prev,
-              {
-                id: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
-                senderId: data.senderId,
-                senderNickname: data.senderNickname,
-                originalText: data.text,
-                translatedText: data.translatedText,
-                sourceLang: data.sourceLang,
-                targetLang: data.targetLang,
-                timestamp: Date.now(),
-              },
-            ]);
-          });
-        } else {
-          // autoSpeak off — just show transcript immediately
-          setTranscript(prev => [
-            ...prev,
-            {
-              id: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
-              senderId: data.senderId,
-              senderNickname: data.senderNickname,
-              originalText: data.text,
-              translatedText: data.translatedText,
-              sourceLang: data.sourceLang,
-              targetLang: data.targetLang,
-              timestamp: Date.now(),
-            },
-          ]);
-        }
-      } else {
-        // Interim — show as live subtitle only, no TTS
-        setInterimText(data.translatedText);
-        setInterimSender(data.senderNickname);
-      }
+    /**
+     * 'final_voice' — clean final translation, sent to receiver only.
+     * Queue for TTS. The transcript will arrive via 'translation_result'
+     * but we hold it until after TTS finishes (voice-first).
+     */
+    socket.on('final_voice', (data: {
+      senderId: string;
+      senderNickname: string;
+      originalText: string;
+      translatedText: string;
+      sourceLang: string;
+      targetLang: string;
+      timestamp: number;
+    }) => {
+      // Clear live subtitle — final translation replaces it
+      setInterimText(null);
+      setInterimSender(null);
+
+      if (!autoSpeakRef.current || !data.translatedText.trim()) return;
+
+      // Mark this timestamp as pending — 'translation_result' will skip it
+      pendingTimestamps.current.add(data.timestamp);
+
+      const entry: TranscriptEntry = {
+        id: `${data.timestamp}-${Math.random().toString(36).slice(2)}`,
+        senderId: data.senderId,
+        senderNickname: data.senderNickname,
+        originalText: data.originalText,
+        translatedText: data.translatedText,
+        sourceLang: data.sourceLang,
+        targetLang: data.targetLang,
+        timestamp: data.timestamp,
+      };
+
+      // Queue for TTS — transcript added after speech finishes
+      speechQueueRef.current.push({
+        text: data.translatedText,
+        lang: myLanguageRef.current,
+        onDone: () => {
+          pendingTimestamps.current.delete(data.timestamp);
+          setTranscript(prev => [...prev, entry]);
+        },
+      });
+
+      processQueue();
     });
 
     /**
      * 'translation_result' — transcript event sent to BOTH users.
-     * The sender sees their own message in the transcript immediately.
-     * The receiver already got the voice via 'live_voice' above,
-     * so we only add the transcript for the sender here.
+     *
+     * For the SENDER: show immediately (they said it, they know).
+     * For the RECEIVER: if autoSpeak is on and this timestamp is
+     * pending in the speech queue, skip — transcript will be added
+     * after TTS finishes. Otherwise show immediately.
      */
     socket.on('translation_result', (data: {
       senderId: string;
@@ -230,25 +239,30 @@ export function useTranslation(myLanguage: string) {
       targetLang: string;
       timestamp: number;
     }) => {
+      // Clear subtitle in case it's still showing
+      setInterimText(null);
+      setInterimSender(null);
+
       const isMe = data.senderId === socket.id;
 
-      if (isMe) {
-        // Sender sees their own message immediately in transcript
-        setTranscript(prev => [
-          ...prev,
-          {
-            id: `${data.timestamp}-${Math.random().toString(36).slice(2)}`,
-            senderId: data.senderId,
-            senderNickname: data.senderNickname,
-            originalText: data.originalText,
-            translatedText: data.translatedText,
-            sourceLang: data.sourceLang,
-            targetLang: data.targetLang,
-            timestamp: data.timestamp,
-          },
-        ]);
+      // If pending in speech queue, the onDone callback will add it
+      if (!isMe && pendingTimestamps.current.has(data.timestamp)) {
+        return;
       }
-      // Receiver's transcript is added after live_voice final speech ends
+
+      setTranscript(prev => [
+        ...prev,
+        {
+          id: `${data.timestamp}-${Math.random().toString(36).slice(2)}`,
+          senderId: data.senderId,
+          senderNickname: data.senderNickname,
+          originalText: data.originalText,
+          translatedText: data.translatedText,
+          sourceLang: data.sourceLang,
+          targetLang: data.targetLang,
+          timestamp: data.timestamp,
+        },
+      ]);
     });
 
     socket.on('translation_error', (data: { message: string }) => {
@@ -260,7 +274,7 @@ export function useTranslation(myLanguage: string) {
     return () => {
       socket.disconnect();
     };
-  }, [speakNow]);
+  }, [processQueue]);
 
   const createRoom = useCallback((nickname: string) => {
     socketRef.current?.emit('create_room', {
@@ -280,7 +294,9 @@ export function useTranslation(myLanguage: string) {
   const leaveRoom = useCallback(() => {
     stopListening();
     window.speechSynthesis?.cancel();
-    currentUtteranceRef.current = null;
+    speechQueueRef.current = [];
+    pendingTimestamps.current.clear();
+    isSpeakingRef.current = false;
 
     socketRef.current?.emit('leave_room');
     setRoomCode(null);
