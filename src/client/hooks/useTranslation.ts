@@ -1,6 +1,9 @@
 import { useState, useRef, useCallback, useEffect } from 'react';
 import { io, Socket } from 'socket.io-client';
 
+// Build version — visible in console to verify deployments
+const BUILD_VERSION = '2026-03-16-v5';
+
 // Web Speech API language code mapping (BCP 47 codes)
 const SPEECH_LANG_MAP: Record<string, string> = {
   en: 'en-US', es: 'es-ES', fr: 'fr-FR', de: 'de-DE',
@@ -39,18 +42,31 @@ interface SpeechRecognitionErrorEvent {
   error: string;
 }
 
+// Debug logger — helps trace issues in production
+function dbg(tag: string, ...args: unknown[]) {
+  console.log(`[VT:${tag}]`, ...args);
+}
+
+/**
+ * Warm up SpeechSynthesis — Chrome blocks TTS until the first call
+ * happens during a user gesture. We call this on the first user click
+ * (create/join room) to "unlock" the synthesis engine.
+ */
+let ttsWarmedUp = false;
+function warmUpTTS() {
+  if (ttsWarmedUp) return;
+  if (!('speechSynthesis' in window)) return;
+  ttsWarmedUp = true;
+  const synth = window.speechSynthesis;
+  const silent = new SpeechSynthesisUtterance('');
+  silent.volume = 0;
+  synth.speak(silent);
+  synth.cancel();
+  dbg('TTS', 'Warmed up speechSynthesis');
+}
+
 /**
  * Voice translation hook — phone-call feel.
- *
- * How it works:
- * - Partner speaks → you see live translated subtitles updating in real-time
- * - Partner pauses → final translation is spoken aloud through your speaker
- * - After speech finishes → transcript entry appears (voice-first)
- * - Both mics stay on — full duplex, simultaneous conversation
- *
- * TTS uses a queue to prevent overlapping speech. Interim text is
- * visual-only (subtitles) because partial speech recognition is too
- * inaccurate for TTS.
  */
 export function useTranslation(myLanguage: string) {
   const [isConnected, setIsConnected] = useState(false);
@@ -70,8 +86,7 @@ export function useTranslation(myLanguage: string) {
   const myLanguageRef = useRef(myLanguage);
   const autoSpeakRef = useRef(autoSpeak);
 
-  // Speech queue — final translations are queued and spoken in order
-  // This prevents overlapping TTS and ensures clean, sequential playback
+  // Speech queue — final translations spoken in order, no overlap
   const speechQueueRef = useRef<Array<{
     text: string;
     lang: string;
@@ -79,41 +94,47 @@ export function useTranslation(myLanguage: string) {
   }>>([]);
   const isSpeakingRef = useRef(false);
 
-  // When TTS is playing, we mute the mic to prevent the speaker audio
-  // from being picked up and re-transcribed (echo/feedback loop).
-  // This is the #1 cause of phantom transcriptions.
+  // Mic mute during TTS — prevents echo feedback loop
   const micMutedRef = useRef(false);
+
+  // Client-side dedup — last transcript IDs to prevent duplicates
+  const recentTranscriptIds = useRef<Set<string>>(new Set());
 
   // Keep refs in sync
   myLanguageRef.current = myLanguage;
   autoSpeakRef.current = autoSpeak;
 
+  // Log version on mount
+  useEffect(() => {
+    dbg('INIT', `Voice Translation ${BUILD_VERSION}`);
+  }, []);
+
   /**
-   * Process the speech queue — speak the next item if idle.
-   * Each item is spoken fully before moving to the next.
-   *
-   * Chrome workaround: Chrome's speechSynthesis can silently fail
-   * if there's stale state or voices aren't loaded. We cancel any
-   * stuck synthesis before starting a new utterance, and use a
-   * safety timeout to recover if onend/onerror never fire.
+   * Process the speech queue — speak the next item.
    */
   const processQueue = useCallback(() => {
     if (isSpeakingRef.current) return;
     if (speechQueueRef.current.length === 0) return;
-    if (!('speechSynthesis' in window)) return;
+    if (!('speechSynthesis' in window)) {
+      dbg('TTS', 'speechSynthesis not available');
+      // Still add transcripts even if TTS unavailable
+      while (speechQueueRef.current.length > 0) {
+        speechQueueRef.current.shift()!.onDone();
+      }
+      return;
+    }
 
     const synth = window.speechSynthesis;
 
-    // Chrome fix: cancel any stuck/stale synthesis state
+    // Clear any stale state
     synth.cancel();
 
     const next = speechQueueRef.current.shift()!;
     isSpeakingRef.current = true;
     setIsSpeaking(true);
-
-    // MUTE mic while TTS plays — prevents speaker audio from being
-    // picked up by the mic and re-transcribed as phantom speech
     micMutedRef.current = true;
+
+    dbg('TTS', `Speaking: "${next.text.substring(0, 40)}..." lang=${next.lang}`);
 
     const utterance = new SpeechSynthesisUtterance(next.text);
     utterance.lang = SPEECH_LANG_MAP[next.lang] || next.lang;
@@ -121,51 +142,67 @@ export function useTranslation(myLanguage: string) {
     utterance.pitch = 1.0;
     utterance.volume = 1.0;
 
-    // Safety timeout: if onend/onerror never fire (Chrome bug with
-    // long utterances or when synthesis silently fails), recover
-    // after a generous timeout based on text length
-    let safetyTimer: ReturnType<typeof setTimeout> | null = null;
     let finished = false;
+    let safetyTimer: ReturnType<typeof setTimeout> | null = null;
 
-    const finish = () => {
+    const finish = (reason: string) => {
       if (finished) return;
       finished = true;
       if (safetyTimer) clearTimeout(safetyTimer);
 
+      dbg('TTS', `Finished: ${reason}`);
       isSpeakingRef.current = false;
       setIsSpeaking(false);
       next.onDone();
 
-      // Keep mic muted for 300ms after TTS ends — the mic can still
-      // pick up the tail-end echo of the speaker audio
+      // Keep mic muted 500ms after TTS to avoid echo pickup
       setTimeout(() => {
         if (speechQueueRef.current.length === 0) {
           micMutedRef.current = false;
+          dbg('MIC', 'Unmuted');
         }
         processQueue();
-      }, 300);
+      }, 500);
     };
 
-    utterance.onend = finish;
-    utterance.onerror = finish;
+    utterance.onend = () => finish('onend');
+    utterance.onerror = (e) => {
+      dbg('TTS', 'Error:', (e as any).error || e);
+      finish('onerror');
+    };
 
-    // Estimate max speech time: ~150ms per character + 3s buffer
-    const maxMs = Math.max(5000, next.text.length * 150 + 3000);
+    // Safety timeout: recover if events never fire
+    const maxMs = Math.max(8000, next.text.length * 150 + 5000);
     safetyTimer = setTimeout(() => {
-      if (!finished) {
-        console.warn('TTS safety timeout — speech may have silently failed');
-        synth.cancel();
-        finish();
-      }
+      dbg('TTS', `Safety timeout after ${maxMs}ms`);
+      synth.cancel();
+      finish('timeout');
     }, maxMs);
 
-    // Chrome fix: sometimes speechSynthesis needs a tiny delay
-    // after cancel() before speak() will work
+    // Chrome needs a small delay after cancel() before speak() works
     setTimeout(() => {
       if (!finished) {
-        synth.speak(utterance);
+        try {
+          synth.speak(utterance);
+
+          // Chrome bug: long utterances get auto-paused after ~15s.
+          // Workaround: periodically resume.
+          const resumeInterval = setInterval(() => {
+            if (finished) {
+              clearInterval(resumeInterval);
+              return;
+            }
+            if (synth.paused) {
+              dbg('TTS', 'Resuming paused synthesis');
+              synth.resume();
+            }
+          }, 5000);
+        } catch (err) {
+          dbg('TTS', 'speak() threw:', err);
+          finish('exception');
+        }
       }
-    }, 50);
+    }, 80);
   }, []);
 
   // Initialize Socket.IO connection
@@ -175,21 +212,25 @@ export function useTranslation(myLanguage: string) {
     });
 
     socket.on('connect', () => {
+      dbg('SOCKET', 'Connected:', socket.id);
       setIsConnected(true);
       setError(null);
     });
 
-    socket.on('disconnect', () => {
+    socket.on('disconnect', (reason) => {
+      dbg('SOCKET', 'Disconnected:', reason);
       setIsConnected(false);
     });
 
     socket.on('room_created', (data: { roomCode: string; userId: string }) => {
+      dbg('ROOM', 'Created:', data.roomCode);
       setRoomCode(data.roomCode);
       setMyId(data.userId);
       setError(null);
     });
 
     socket.on('room_joined', (data: { roomCode: string; userId: string; participants: Participant[] }) => {
+      dbg('ROOM', 'Joined:', data.roomCode, 'participants:', data.participants.length);
       setRoomCode(data.roomCode);
       setMyId(data.userId);
       setParticipants(data.participants);
@@ -197,22 +238,22 @@ export function useTranslation(myLanguage: string) {
     });
 
     socket.on('room_error', (data: { message: string }) => {
+      dbg('ROOM', 'Error:', data.message);
       setError(data.message);
     });
 
     socket.on('participant_joined', (participant: Participant) => {
+      dbg('ROOM', 'Partner joined:', participant.nickname);
       setParticipants(prev => [...prev.filter(p => p.id !== participant.id), participant]);
     });
 
     socket.on('participant_left', (data: { id: string; nickname: string }) => {
+      dbg('ROOM', 'Partner left:', data.nickname);
       setParticipants(prev => prev.filter(p => p.id !== data.id));
     });
 
     /**
-     * 'live_subtitle' — interim translated text from the server.
-     * Shown as a live updating subtitle so the receiver can read
-     * along in their own language while the partner is still speaking.
-     * NOT spoken aloud (interim STT is too inaccurate for TTS).
+     * 'live_subtitle' — interim translated text, visual only.
      */
     socket.on('live_subtitle', (data: {
       senderId: string;
@@ -222,14 +263,14 @@ export function useTranslation(myLanguage: string) {
       sourceLang: string;
       targetLang: string;
     }) => {
+      dbg('SUB', `Subtitle: "${data.translatedText.substring(0, 30)}..."`);
       setInterimText(data.translatedText);
       setInterimSender(data.senderNickname);
     });
 
     /**
-     * 'final_voice' — clean final translation, sent to receiver only.
-     * Queue for TTS. The transcript will arrive via 'translation_result'
-     * but we hold it until after TTS finishes (voice-first).
+     * 'final_voice' — final translation for the RECEIVER.
+     * Queue for TTS, add transcript after speech finishes.
      */
     socket.on('final_voice', (data: {
       senderId: string;
@@ -240,9 +281,21 @@ export function useTranslation(myLanguage: string) {
       targetLang: string;
       timestamp: number;
     }) => {
-      // Clear live subtitle — final translation replaces it
+      dbg('VOICE', `Final voice: "${data.translatedText.substring(0, 40)}..."`);
+
+      // Clear live subtitle
       setInterimText(null);
       setInterimSender(null);
+
+      // Dedup key based on timestamp + sender
+      const dedupKey = `${data.senderId}-${data.timestamp}`;
+      if (recentTranscriptIds.current.has(dedupKey)) {
+        dbg('VOICE', 'Skipped duplicate final_voice');
+        return;
+      }
+      recentTranscriptIds.current.add(dedupKey);
+      // Clean old keys after 10s
+      setTimeout(() => recentTranscriptIds.current.delete(dedupKey), 10000);
 
       const entry: TranscriptEntry = {
         id: `${data.timestamp}-${Math.random().toString(36).slice(2)}`,
@@ -255,8 +308,9 @@ export function useTranslation(myLanguage: string) {
         timestamp: data.timestamp,
       };
 
-      // If autoSpeak is off or text is empty, just add transcript
+      // If autoSpeak off or empty text, just add transcript immediately
       if (!autoSpeakRef.current || !data.translatedText.trim()) {
+        dbg('VOICE', 'autoSpeak off or empty, adding transcript directly');
         setTranscript(prev => [...prev, entry]);
         return;
       }
@@ -266,6 +320,7 @@ export function useTranslation(myLanguage: string) {
         text: data.translatedText,
         lang: myLanguageRef.current,
         onDone: () => {
+          dbg('VOICE', 'TTS done, adding transcript');
           setTranscript(prev => [...prev, entry]);
         },
       });
@@ -274,9 +329,7 @@ export function useTranslation(myLanguage: string) {
     });
 
     /**
-     * 'translation_result' — transcript event sent to SENDER only.
-     * Show immediately — the sender said it, they know what they said.
-     * The receiver's transcript comes from final_voice → onDone.
+     * 'translation_result' — transcript for the SENDER only.
      */
     socket.on('translation_result', (data: {
       senderId: string;
@@ -287,6 +340,17 @@ export function useTranslation(myLanguage: string) {
       targetLang: string;
       timestamp: number;
     }) => {
+      dbg('TRANS', `My transcript: "${data.originalText.substring(0, 30)}..."`);
+
+      // Dedup
+      const dedupKey = `${data.senderId}-${data.timestamp}`;
+      if (recentTranscriptIds.current.has(dedupKey)) {
+        dbg('TRANS', 'Skipped duplicate translation_result');
+        return;
+      }
+      recentTranscriptIds.current.add(dedupKey);
+      setTimeout(() => recentTranscriptIds.current.delete(dedupKey), 10000);
+
       setTranscript(prev => [
         ...prev,
         {
@@ -303,6 +367,7 @@ export function useTranslation(myLanguage: string) {
     });
 
     socket.on('translation_error', (data: { message: string }) => {
+      dbg('ERR', data.message);
       setError(data.message);
     });
 
@@ -314,6 +379,7 @@ export function useTranslation(myLanguage: string) {
   }, [processQueue]);
 
   const createRoom = useCallback((nickname: string) => {
+    warmUpTTS(); // Unlock TTS on user gesture
     socketRef.current?.emit('create_room', {
       language: myLanguageRef.current,
       nickname,
@@ -321,6 +387,7 @@ export function useTranslation(myLanguage: string) {
   }, []);
 
   const joinRoom = useCallback((code: string, nickname: string) => {
+    warmUpTTS(); // Unlock TTS on user gesture
     socketRef.current?.emit('join_room', {
       roomCode: code,
       language: myLanguageRef.current,
@@ -334,6 +401,7 @@ export function useTranslation(myLanguage: string) {
     speechQueueRef.current = [];
     isSpeakingRef.current = false;
     micMutedRef.current = false;
+    recentTranscriptIds.current.clear();
 
     socketRef.current?.emit('leave_room');
     setRoomCode(null);
@@ -351,6 +419,8 @@ export function useTranslation(myLanguage: string) {
     const socket = socketRef.current;
     if (!socket || !roomCode) return;
 
+    warmUpTTS(); // Extra safety — ensure TTS is unlocked
+
     const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
     if (!SpeechRecognition) {
       setError('Speech recognition is not supported in this browser. Please use Chrome or Edge.');
@@ -364,9 +434,7 @@ export function useTranslation(myLanguage: string) {
     recognition.maxAlternatives = 1;
 
     recognition.onresult = (event: SpeechRecognitionEvent) => {
-      // DROP all speech while TTS is playing — this is the main fix
-      // for phantom transcriptions. The mic picks up the speaker output
-      // and sends it back as "speech", creating a feedback loop.
+      // DROP all speech while TTS is playing — prevents echo feedback loop
       if (micMutedRef.current) return;
 
       let interimTranscript = '';
@@ -380,13 +448,12 @@ export function useTranslation(myLanguage: string) {
         // Skip empty or very short results (noise, breathing)
         if (text.length < 2) continue;
 
-        // Skip low-confidence results — these are usually background
-        // noise, ambient sounds, or mic artifacts. The threshold 0.5
-        // filters out most garbage while keeping real speech.
-        // (confidence is 0-1, but can be 0 for interim results in
-        // some browsers, so we only filter finals by confidence)
         if (result.isFinal) {
-          if (confidence > 0 && confidence < 0.5) continue;
+          // Skip low-confidence finals (noise, ambient sounds)
+          if (confidence > 0 && confidence < 0.5) {
+            dbg('STT', `Skipped low-confidence final: "${text}" (${confidence})`);
+            continue;
+          }
           finalTranscript += text + ' ';
         } else {
           interimTranscript += text;
@@ -400,13 +467,14 @@ export function useTranslation(myLanguage: string) {
         socket.emit('speech_text', { text: interimTranscript, isFinal: false });
       }
       if (finalTranscript) {
+        dbg('STT', `Final: "${finalTranscript}"`);
         socket.emit('speech_text', { text: finalTranscript, isFinal: true });
       }
     };
 
     recognition.onerror = (event: SpeechRecognitionErrorEvent) => {
       if (event.error === 'no-speech' || event.error === 'aborted') return;
-      console.error('Speech recognition error:', event.error);
+      dbg('STT', 'Error:', event.error);
       if (event.error === 'not-allowed') {
         setError('Microphone access denied. Please allow microphone access and try again.');
       }
@@ -415,6 +483,7 @@ export function useTranslation(myLanguage: string) {
     recognition.onend = () => {
       // Auto-restart if still supposed to be listening
       if (recognitionRef.current === recognition) {
+        dbg('STT', 'Recognition ended, auto-restarting');
         try { recognition.start(); } catch { /* already started or page closed */ }
       }
     };
@@ -424,6 +493,7 @@ export function useTranslation(myLanguage: string) {
       recognitionRef.current = recognition;
       setIsListening(true);
       setError(null);
+      dbg('STT', `Started listening in ${recognition.lang}`);
     } catch {
       setError('Could not start speech recognition.');
     }
@@ -438,10 +508,12 @@ export function useTranslation(myLanguage: string) {
     setIsListening(false);
     setInterimText(null);
     setInterimSender(null);
+    dbg('STT', 'Stopped listening');
   }, []);
 
   const clearTranscript = useCallback(() => {
     setTranscript([]);
+    recentTranscriptIds.current.clear();
   }, []);
 
   return {

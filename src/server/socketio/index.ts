@@ -192,14 +192,16 @@ export function setupSocketIOServer(server: http.Server): Server {
       // --- FINAL: translate and send for TTS + transcript ---
 
       // DEDUP: The Web Speech API often fires the same final text
-      // multiple times (browser quirk). Skip exact duplicates within
-      // a 3-second window to prevent duplicate TTS + transcript.
+      // multiple times (browser quirk), sometimes with slight variations
+      // like added/removed punctuation or capitalization changes.
+      // Normalize before comparing to catch these near-duplicates.
       const now = Date.now();
+      const normalized = text.toLowerCase().replace(/[.,!?;:]+$/g, '').trim();
       const prev = lastFinal.get(socket.id);
-      if (prev && prev.text === text && now - prev.timestamp < FINAL_DEDUP_WINDOW_MS) {
+      if (prev && prev.text === normalized && now - prev.timestamp < FINAL_DEDUP_WINDOW_MS) {
         return;
       }
-      lastFinal.set(socket.id, { text, timestamp: now });
+      lastFinal.set(socket.id, { text: normalized, timestamp: now });
 
       // Cancel any pending interim translation for this socket
       cleanupSocketState(socket.id);

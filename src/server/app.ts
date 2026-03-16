@@ -61,8 +61,17 @@ app.use(routes);
 
 // Serve static client files
 const clientDir = path.join(__dirname, '../client');
-app.use(express.static(clientDir));
+// JS/CSS have content hashes — cache forever. HTML must never be cached
+// so the browser always gets the latest index.html pointing to new bundles.
+app.use(express.static(clientDir, {
+  setHeaders: (res, filePath) => {
+    if (filePath.endsWith('.html')) {
+      res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+    }
+  },
+}));
 app.get('*', (_req, res) => {
+  res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
   res.sendFile(path.join(clientDir, 'index.html'));
 });
 
