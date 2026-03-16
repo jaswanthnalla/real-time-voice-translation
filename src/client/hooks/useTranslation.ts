@@ -84,12 +84,6 @@ export function useTranslation(myLanguage: string) {
   // This is the #1 cause of phantom transcriptions.
   const micMutedRef = useRef(false);
 
-  // Timestamps of translations currently waiting in the speech queue.
-  // When 'translation_result' arrives for the receiver, if the timestamp
-  // is pending here, we skip adding it to transcript — it'll be added
-  // after TTS finishes via the onDone callback.
-  const pendingTimestamps = useRef<Set<number>>(new Set());
-
   // Keep refs in sync
   myLanguageRef.current = myLanguage;
   autoSpeakRef.current = autoSpeak;
@@ -97,11 +91,21 @@ export function useTranslation(myLanguage: string) {
   /**
    * Process the speech queue — speak the next item if idle.
    * Each item is spoken fully before moving to the next.
+   *
+   * Chrome workaround: Chrome's speechSynthesis can silently fail
+   * if there's stale state or voices aren't loaded. We cancel any
+   * stuck synthesis before starting a new utterance, and use a
+   * safety timeout to recover if onend/onerror never fire.
    */
   const processQueue = useCallback(() => {
     if (isSpeakingRef.current) return;
     if (speechQueueRef.current.length === 0) return;
     if (!('speechSynthesis' in window)) return;
+
+    const synth = window.speechSynthesis;
+
+    // Chrome fix: cancel any stuck/stale synthesis state
+    synth.cancel();
 
     const next = speechQueueRef.current.shift()!;
     isSpeakingRef.current = true;
@@ -117,7 +121,17 @@ export function useTranslation(myLanguage: string) {
     utterance.pitch = 1.0;
     utterance.volume = 1.0;
 
+    // Safety timeout: if onend/onerror never fire (Chrome bug with
+    // long utterances or when synthesis silently fails), recover
+    // after a generous timeout based on text length
+    let safetyTimer: ReturnType<typeof setTimeout> | null = null;
+    let finished = false;
+
     const finish = () => {
+      if (finished) return;
+      finished = true;
+      if (safetyTimer) clearTimeout(safetyTimer);
+
       isSpeakingRef.current = false;
       setIsSpeaking(false);
       next.onDone();
@@ -125,8 +139,6 @@ export function useTranslation(myLanguage: string) {
       // Keep mic muted for 300ms after TTS ends — the mic can still
       // pick up the tail-end echo of the speaker audio
       setTimeout(() => {
-        // Only unmute if no more items in queue (otherwise next
-        // processQueue call will keep it muted)
         if (speechQueueRef.current.length === 0) {
           micMutedRef.current = false;
         }
@@ -137,7 +149,23 @@ export function useTranslation(myLanguage: string) {
     utterance.onend = finish;
     utterance.onerror = finish;
 
-    window.speechSynthesis.speak(utterance);
+    // Estimate max speech time: ~150ms per character + 3s buffer
+    const maxMs = Math.max(5000, next.text.length * 150 + 3000);
+    safetyTimer = setTimeout(() => {
+      if (!finished) {
+        console.warn('TTS safety timeout — speech may have silently failed');
+        synth.cancel();
+        finish();
+      }
+    }, maxMs);
+
+    // Chrome fix: sometimes speechSynthesis needs a tiny delay
+    // after cancel() before speak() will work
+    setTimeout(() => {
+      if (!finished) {
+        synth.speak(utterance);
+      }
+    }, 50);
   }, []);
 
   // Initialize Socket.IO connection
@@ -216,11 +244,6 @@ export function useTranslation(myLanguage: string) {
       setInterimText(null);
       setInterimSender(null);
 
-      if (!autoSpeakRef.current || !data.translatedText.trim()) return;
-
-      // Mark this timestamp as pending — 'translation_result' will skip it
-      pendingTimestamps.current.add(data.timestamp);
-
       const entry: TranscriptEntry = {
         id: `${data.timestamp}-${Math.random().toString(36).slice(2)}`,
         senderId: data.senderId,
@@ -232,12 +255,17 @@ export function useTranslation(myLanguage: string) {
         timestamp: data.timestamp,
       };
 
-      // Queue for TTS — transcript added after speech finishes
+      // If autoSpeak is off or text is empty, just add transcript
+      if (!autoSpeakRef.current || !data.translatedText.trim()) {
+        setTranscript(prev => [...prev, entry]);
+        return;
+      }
+
+      // Queue for TTS — transcript added after speech finishes (voice-first)
       speechQueueRef.current.push({
         text: data.translatedText,
         lang: myLanguageRef.current,
         onDone: () => {
-          pendingTimestamps.current.delete(data.timestamp);
           setTranscript(prev => [...prev, entry]);
         },
       });
@@ -246,12 +274,9 @@ export function useTranslation(myLanguage: string) {
     });
 
     /**
-     * 'translation_result' — transcript event sent to BOTH users.
-     *
-     * For the SENDER: show immediately (they said it, they know).
-     * For the RECEIVER: if autoSpeak is on and this timestamp is
-     * pending in the speech queue, skip — transcript will be added
-     * after TTS finishes. Otherwise show immediately.
+     * 'translation_result' — transcript event sent to SENDER only.
+     * Show immediately — the sender said it, they know what they said.
+     * The receiver's transcript comes from final_voice → onDone.
      */
     socket.on('translation_result', (data: {
       senderId: string;
@@ -262,17 +287,6 @@ export function useTranslation(myLanguage: string) {
       targetLang: string;
       timestamp: number;
     }) => {
-      // Clear subtitle in case it's still showing
-      setInterimText(null);
-      setInterimSender(null);
-
-      const isMe = data.senderId === socket.id;
-
-      // If pending in speech queue, the onDone callback will add it
-      if (!isMe && pendingTimestamps.current.has(data.timestamp)) {
-        return;
-      }
-
       setTranscript(prev => [
         ...prev,
         {
@@ -318,8 +332,8 @@ export function useTranslation(myLanguage: string) {
     stopListening();
     window.speechSynthesis?.cancel();
     speechQueueRef.current = [];
-    pendingTimestamps.current.clear();
     isSpeakingRef.current = false;
+    micMutedRef.current = false;
 
     socketRef.current?.emit('leave_room');
     setRoomCode(null);

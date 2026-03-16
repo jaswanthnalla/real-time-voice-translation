@@ -194,7 +194,9 @@ export function setupSocketIOServer(server: http.Server): Server {
           translatedText = result.translatedText;
         }
 
-        // Send to receiver for TTS — they hear this spoken aloud
+        // Send to RECEIVER for TTS — they hear this spoken aloud.
+        // Receiver's transcript entry is added after TTS finishes
+        // (voice-first) inside the final_voice handler's onDone callback.
         io.to(otherUser.socketId).emit('final_voice', {
           senderId: socket.id,
           senderNickname: sender.nickname,
@@ -205,8 +207,11 @@ export function setupSocketIOServer(server: http.Server): Server {
           timestamp,
         });
 
-        // Send transcript to both users
-        io.to(roomCode).emit('translation_result', {
+        // Send transcript to SENDER only — they said it, show immediately.
+        // Previously this was sent to the whole room, causing duplicates:
+        // the receiver could process translation_result before final_voice,
+        // adding the entry twice (once here, once in final_voice onDone).
+        socket.emit('translation_result', {
           senderId: socket.id,
           senderNickname: sender.nickname,
           originalText: text,
