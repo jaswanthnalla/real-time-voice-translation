@@ -20,11 +20,8 @@ interface Room {
 const rooms = new Map<string, Room>();
 const socketToRoom = new Map<string, string>();
 
-// Track last interim translation per socket to avoid duplicate API calls
+// Track last interim text per socket to avoid duplicate sends
 const lastInterimText = new Map<string, string>();
-
-// Debounce timers for interim translation
-const interimTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
 function generateRoomCode(): string {
   const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
@@ -94,13 +91,13 @@ export function setupSocketIOServer(server: http.Server): Server {
     /**
      * Live interpreter pipeline:
      *
-     * INTERIM text: debounce 300ms, then translate and send as 'live_voice'
-     *   → receiver speaks it immediately (replacing any ongoing interim speech)
-     *   → feels like a simultaneous interpreter whispering in your ear
+     * INTERIM text: forward raw text as live subtitle (no translation,
+     *   no TTS) — partial speech recognition is often inaccurate, so
+     *   translating/speaking it produces glitchy results.
      *
-     * FINAL text: translate and send as 'translation_result'
-     *   → receiver speaks the final clean translation
-     *   → transcript entry added for both users
+     * FINAL text: translate and send as 'live_voice' (isFinal=true)
+     *   → receiver speaks the clean final translation aloud
+     *   → transcript entry added for both users via 'translation_result'
      *
      * Both users can speak at the same time (full duplex).
      */
@@ -122,58 +119,24 @@ export function setupSocketIOServer(server: http.Server): Server {
       const sameLang = sourceLang === targetLang;
 
       if (!isFinal) {
-        // Debounced interim translation — translate partial speech and speak it
-        // to the other user in near real-time (like a simultaneous interpreter)
-
-        // Clear any pending interim timer for this socket
-        const existingTimer = interimTimers.get(socket.id);
-        if (existingTimer) clearTimeout(existingTimer);
-
-        // Skip if same text as last interim (avoid duplicate API calls)
+        // Interim — forward raw text as live subtitle (no translation)
+        // Skip if same text as last interim to avoid spamming
         if (lastInterimText.get(socket.id) === text) return;
+        lastInterimText.set(socket.id, text);
 
-        // Debounce: wait 300ms of silence before translating interim
-        const timer = setTimeout(async () => {
-          lastInterimText.set(socket.id, text);
-
-          if (sameLang) {
-            // Same language — just forward the live text for display
-            io.to(otherUser.socketId).emit('live_voice', {
-              senderId: socket.id,
-              senderNickname: sender.nickname,
-              text,
-              translatedText: text,
-              sourceLang,
-              targetLang,
-              isFinal: false,
-            });
-            return;
-          }
-
-          try {
-            const result = await freeTranslation.translate(text, sourceLang, targetLang);
-            io.to(otherUser.socketId).emit('live_voice', {
-              senderId: socket.id,
-              senderNickname: sender.nickname,
-              text,
-              translatedText: result.translatedText,
-              sourceLang,
-              targetLang,
-              isFinal: false,
-            });
-          } catch {
-            // Interim translation failed — not critical, skip
-          }
-        }, 300);
-
-        interimTimers.set(socket.id, timer);
+        io.to(otherUser.socketId).emit('live_voice', {
+          senderId: socket.id,
+          senderNickname: sender.nickname,
+          text,
+          translatedText: text, // raw untranslated — just for subtitle display
+          sourceLang,
+          targetLang,
+          isFinal: false,
+        });
         return;
       }
 
-      // FINAL — clean up interim state and send definitive translation
-      const pendingTimer = interimTimers.get(socket.id);
-      if (pendingTimer) clearTimeout(pendingTimer);
-      interimTimers.delete(socket.id);
+      // FINAL — translate and send for TTS
       lastInterimText.delete(socket.id);
 
       try {
@@ -194,7 +157,7 @@ export function setupSocketIOServer(server: http.Server): Server {
           timestamp,
         };
 
-        // Send final translated voice to receiver — this replaces any interim speech
+        // Send final translated voice to receiver for TTS
         io.to(otherUser.socketId).emit('live_voice', {
           senderId: socket.id,
           senderNickname: sender.nickname,
@@ -222,10 +185,6 @@ export function setupSocketIOServer(server: http.Server): Server {
 
     socket.on('disconnect', () => {
       websocketConnectionsGauge.dec();
-      // Clean up interim state
-      const timer = interimTimers.get(socket.id);
-      if (timer) clearTimeout(timer);
-      interimTimers.delete(socket.id);
       lastInterimText.delete(socket.id);
       handleLeaveRoom(socket, io);
       logger.info('Client disconnected', { socketId: socket.id });
