@@ -37,14 +37,12 @@ interface SpeechRecognitionErrorEvent {
 /**
  * Live phone-call translation hook.
  *
- * Cancel-and-replace model: when a new interim translation arrives,
- * cancel whatever is currently being spoken and immediately speak the
- * new version. This creates a continuous, overlapping feel — like a
- * simultaneous interpreter whispering in your ear while the other
- * person talks. Both users' mics stay on (full duplex).
+ * Interim translations appear as live subtitles only (no TTS) — this
+ * avoids glitchy audio from inaccurate partial speech recognition.
+ * Final translations are spoken aloud first, then the transcript
+ * entry appears after speech ends (voice-first).
  *
- * Final translations replace the last interim speech cleanly, and
- * the transcript entry is added only after the final speech finishes.
+ * Both users' mics stay on (full duplex).
  */
 export function useTranslation(myLanguage: string) {
   const [isConnected, setIsConnected] = useState(false);
@@ -156,12 +154,12 @@ export function useTranslation(myLanguage: string) {
     /**
      * 'live_voice' — the core phone-call event.
      *
-     * INTERIM (isFinal=false): cancel current speech, speak the new
-     * interim translation immediately. This creates continuous streaming
-     * — like hearing the interpreter adjust in real time.
+     * INTERIM (isFinal=false): show translated text as live subtitle
+     * only — no TTS, because partial speech recognition is often
+     * inaccurate and speaking it creates glitchy choppy audio.
      *
-     * FINAL (isFinal=true): cancel interim speech, speak the clean
-     * final translation. Add transcript entry after speech finishes.
+     * FINAL (isFinal=true): speak the clean final translation aloud,
+     * then add transcript entry after speech finishes (voice-first).
      */
     socket.on('live_voice', (data: {
       senderId: string;
@@ -173,7 +171,7 @@ export function useTranslation(myLanguage: string) {
       isFinal: boolean;
     }) => {
       if (data.isFinal) {
-        // Final translation — speak it cleanly and add to transcript after
+        // Final translation — speak it, then show transcript after
         setInterimText(null);
         setInterimSender(null);
 
@@ -194,15 +192,26 @@ export function useTranslation(myLanguage: string) {
               },
             ]);
           });
+        } else {
+          // autoSpeak off — just show transcript immediately
+          setTranscript(prev => [
+            ...prev,
+            {
+              id: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
+              senderId: data.senderId,
+              senderNickname: data.senderNickname,
+              originalText: data.text,
+              translatedText: data.translatedText,
+              sourceLang: data.sourceLang,
+              targetLang: data.targetLang,
+              timestamp: Date.now(),
+            },
+          ]);
         }
       } else {
-        // Interim — show live text and speak it (cancel-and-replace)
+        // Interim — show as live subtitle only, no TTS
         setInterimText(data.translatedText);
         setInterimSender(data.senderNickname);
-
-        if (autoSpeakRef.current && data.translatedText.trim()) {
-          speakNow(data.translatedText, myLanguageRef.current);
-        }
       }
     });
 
