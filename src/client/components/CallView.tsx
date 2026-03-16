@@ -36,10 +36,22 @@ export const CallView: React.FC<Props> = ({
 }) => {
   const bottomRef = useRef<HTMLDivElement>(null);
   const partner = participants[0];
+  const autoStartedRef = useRef(false);
 
+  // Auto-scroll to bottom
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [transcript, interimText]);
+
+  // Auto-start listening when partner joins
+  useEffect(() => {
+    if (partner && !isListening && !autoStartedRef.current) {
+      autoStartedRef.current = true;
+      const timer = setTimeout(() => onStartListening(), 500);
+      return () => clearTimeout(timer);
+    }
+    return undefined;
+  }, [partner, isListening, onStartListening]);
 
   const langName = (code: string) => SUPPORTED_LANGUAGES[code] || code.toUpperCase();
 
@@ -105,8 +117,8 @@ export const CallView: React.FC<Props> = ({
                 <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
               </svg>
             </div>
-            <p>{partner ? 'Start speaking! Translations appear here.' : 'Share the room code and wait for your partner.'}</p>
-            <p className="hint">Both of you can speak at the same time</p>
+            <p>{partner ? 'Just start talking — translations will appear here after you hear them.' : 'Share the room code and wait for your partner.'}</p>
+            <p className="hint">{partner ? 'Your mic is on. Both of you can speak freely.' : 'Mic starts automatically when they join.'}</p>
           </div>
         ) : (
           <>

@@ -1,19 +1,11 @@
 import { useState, useRef, useCallback, useEffect } from 'react';
 import { io, Socket } from 'socket.io-client';
+
 // Web Speech API language code mapping (BCP 47 codes)
 const SPEECH_LANG_MAP: Record<string, string> = {
-  en: 'en-US',
-  es: 'es-ES',
-  fr: 'fr-FR',
-  de: 'de-DE',
-  it: 'it-IT',
-  pt: 'pt-BR',
-  ru: 'ru-RU',
-  zh: 'zh-CN',
-  ja: 'ja-JP',
-  ko: 'ko-KR',
-  ar: 'ar-SA',
-  hi: 'hi-IN',
+  en: 'en-US', es: 'es-ES', fr: 'fr-FR', de: 'de-DE',
+  it: 'it-IT', pt: 'pt-BR', ru: 'ru-RU', zh: 'zh-CN',
+  ja: 'ja-JP', ko: 'ko-KR', ar: 'ar-SA', hi: 'hi-IN',
 };
 
 export interface TranscriptEntry {
@@ -42,6 +34,16 @@ interface SpeechRecognitionErrorEvent {
   error: string;
 }
 
+/**
+ * Voice-first translation hook.
+ *
+ * The core idea: when you receive a translation from the other person,
+ * SPEAK it aloud first, then show the transcript after speech ends.
+ * This makes it feel like a live interpreter — you hear the translation
+ * in real time, and the text record appears afterward.
+ *
+ * Speech queue ensures translations don't overlap — they play in order.
+ */
 export function useTranslation(myLanguage: string) {
   const [isConnected, setIsConnected] = useState(false);
   const [isListening, setIsListening] = useState(false);
@@ -58,9 +60,69 @@ export function useTranslation(myLanguage: string) {
   const socketRef = useRef<Socket | null>(null);
   const recognitionRef = useRef<any>(null);
   const myLanguageRef = useRef(myLanguage);
+  const autoSpeakRef = useRef(autoSpeak);
 
-  // Keep ref in sync
+  // Speech queue — translations are queued and spoken in order
+  const speechQueueRef = useRef<Array<{
+    text: string;
+    lang: string;
+    entry: TranscriptEntry;
+  }>>([]);
+  const isSpeakingRef = useRef(false);
+
+  // Pending transcript entries that are waiting for speech to finish
+  const pendingTranscriptsRef = useRef<Map<number, TranscriptEntry>>(new Map());
+
+  // Keep refs in sync
   myLanguageRef.current = myLanguage;
+  autoSpeakRef.current = autoSpeak;
+
+  // Process the speech queue — speak the next item if idle
+  const processSpeechQueue = useCallback(() => {
+    if (isSpeakingRef.current) return;
+    if (speechQueueRef.current.length === 0) return;
+    if (!('speechSynthesis' in window)) return;
+
+    const next = speechQueueRef.current.shift()!;
+    isSpeakingRef.current = true;
+    setIsSpeaking(true);
+
+    // Cancel any stale speech
+    window.speechSynthesis.cancel();
+
+    const utterance = new SpeechSynthesisUtterance(next.text);
+    utterance.lang = SPEECH_LANG_MAP[next.lang] || next.lang;
+    utterance.rate = 1.05; // Slightly faster for conversational feel
+    utterance.pitch = 1.0;
+    utterance.volume = 1.0;
+
+    utterance.onend = () => {
+      isSpeakingRef.current = false;
+      setIsSpeaking(false);
+
+      // Now that speech is done, show the transcript entry
+      setTranscript(prev => [...prev, next.entry]);
+
+      // Remove from pending
+      pendingTranscriptsRef.current.delete(next.entry.timestamp);
+
+      // Process next in queue
+      processSpeechQueue();
+    };
+
+    utterance.onerror = () => {
+      isSpeakingRef.current = false;
+      setIsSpeaking(false);
+
+      // Show transcript even if speech failed
+      setTranscript(prev => [...prev, next.entry]);
+      pendingTranscriptsRef.current.delete(next.entry.timestamp);
+
+      processSpeechQueue();
+    };
+
+    window.speechSynthesis.speak(utterance);
+  }, []);
 
   // Initialize Socket.IO connection
   useEffect(() => {
@@ -102,6 +164,7 @@ export function useTranslation(myLanguage: string) {
       setParticipants(prev => prev.filter(p => p.id !== data.id));
     });
 
+    // Interim text — typing indicator (only shown to receiver)
     socket.on('interim_transcript', (data: {
       senderId: string;
       senderNickname: string;
@@ -112,6 +175,57 @@ export function useTranslation(myLanguage: string) {
       setInterimSender(data.senderNickname);
     });
 
+    /**
+     * 'speak_translation' — voice-priority event, sent to receiver only.
+     * Queue this for immediate TTS. The transcript will arrive separately
+     * via 'translation_result' and be held until speech finishes.
+     */
+    socket.on('speak_translation', (data: {
+      senderId: string;
+      senderNickname: string;
+      originalText: string;
+      translatedText: string;
+      sourceLang: string;
+      targetLang: string;
+      timestamp: number;
+    }) => {
+      setInterimText(null);
+      setInterimSender(null);
+
+      if (!autoSpeakRef.current || !data.translatedText.trim()) return;
+
+      const entry: TranscriptEntry = {
+        id: `${data.timestamp}-${Math.random().toString(36).slice(2)}`,
+        senderId: data.senderId,
+        senderNickname: data.senderNickname,
+        originalText: data.originalText,
+        translatedText: data.translatedText,
+        sourceLang: data.sourceLang,
+        targetLang: data.targetLang,
+        timestamp: data.timestamp,
+      };
+
+      // Mark this timestamp as pending (waiting for speech to finish)
+      pendingTranscriptsRef.current.set(data.timestamp, entry);
+
+      // Queue the speech
+      speechQueueRef.current.push({
+        text: data.translatedText,
+        lang: myLanguageRef.current,
+        entry,
+      });
+
+      processSpeechQueue();
+    });
+
+    /**
+     * 'translation_result' — transcript event, sent to both users.
+     *
+     * For the SENDER: show transcript immediately (they said it, they know what it is).
+     * For the RECEIVER: if this timestamp is pending (waiting for speech), skip —
+     * the transcript will be added after TTS finishes. If autoSpeak is off or
+     * if it's the same language, show immediately.
+     */
     socket.on('translation_result', (data: {
       senderId: string;
       senderNickname: string;
@@ -124,6 +238,14 @@ export function useTranslation(myLanguage: string) {
       setInterimText(null);
       setInterimSender(null);
 
+      const isMe = data.senderId === socket.id;
+
+      // If this is already pending in the speech queue, skip — it will be added after TTS
+      if (!isMe && pendingTranscriptsRef.current.has(data.timestamp)) {
+        return;
+      }
+
+      // Show transcript immediately (sender's own message, or autoSpeak is off)
       setTranscript(prev => [
         ...prev,
         {
@@ -138,9 +260,9 @@ export function useTranslation(myLanguage: string) {
         },
       ]);
 
-      // Auto-speak translated text for the OTHER user (not the sender)
-      if (data.senderId !== socket.id && data.sourceLang !== myLanguageRef.current) {
-        speakText(data.translatedText, myLanguageRef.current);
+      // If receiver, autoSpeak off, and different language — speak without delaying transcript
+      if (!isMe && !autoSpeakRef.current && data.sourceLang !== myLanguageRef.current) {
+        // No speech queuing in this case, just show text
       }
     });
 
@@ -153,55 +275,30 @@ export function useTranslation(myLanguage: string) {
     return () => {
       socket.disconnect();
     };
-  }, []);
+  }, [processSpeechQueue]);
 
-  // Speak translated text using browser SpeechSynthesis
-  const speakText = useCallback((text: string, lang: string) => {
-    if (!autoSpeak || !text.trim()) return;
-    if (!('speechSynthesis' in window)) return;
-
-    // Cancel any ongoing speech
-    window.speechSynthesis.cancel();
-
-    const utterance = new SpeechSynthesisUtterance(text);
-    utterance.lang = SPEECH_LANG_MAP[lang] || lang;
-    utterance.rate = 1.0;
-    utterance.pitch = 1.0;
-    utterance.volume = 1.0;
-
-    utterance.onstart = () => setIsSpeaking(true);
-    utterance.onend = () => setIsSpeaking(false);
-    utterance.onerror = () => setIsSpeaking(false);
-
-    window.speechSynthesis.speak(utterance);
-  }, [autoSpeak]);
-
-  // Create a room
   const createRoom = useCallback((nickname: string) => {
-    const socket = socketRef.current;
-    if (!socket) return;
-
-    socket.emit('create_room', {
+    socketRef.current?.emit('create_room', {
       language: myLanguageRef.current,
       nickname,
     });
   }, []);
 
-  // Join a room
   const joinRoom = useCallback((code: string, nickname: string) => {
-    const socket = socketRef.current;
-    if (!socket) return;
-
-    socket.emit('join_room', {
+    socketRef.current?.emit('join_room', {
       roomCode: code,
       language: myLanguageRef.current,
       nickname,
     });
   }, []);
 
-  // Leave current room
   const leaveRoom = useCallback(() => {
     stopListening();
+    window.speechSynthesis?.cancel();
+    speechQueueRef.current = [];
+    pendingTranscriptsRef.current.clear();
+    isSpeakingRef.current = false;
+
     socketRef.current?.emit('leave_room');
     setRoomCode(null);
     setMyId(null);
@@ -210,6 +307,7 @@ export function useTranslation(myLanguage: string) {
     setInterimText(null);
     setInterimSender(null);
     setError(null);
+    setIsSpeaking(false);
   }, []);
 
   // Start listening (Web Speech API for STT)
@@ -236,7 +334,6 @@ export function useTranslation(myLanguage: string) {
       for (let i = event.resultIndex; i < event.results.length; i++) {
         const result = event.results[i];
         const text = result[0].transcript;
-
         if (result.isFinal) {
           finalTranscript += text;
         } else {
@@ -244,21 +341,16 @@ export function useTranslation(myLanguage: string) {
         }
       }
 
-      // Send interim text for real-time display
       if (interimTranscript) {
         socket.emit('speech_text', { text: interimTranscript, isFinal: false });
       }
-
-      // Send final text for translation
       if (finalTranscript) {
         socket.emit('speech_text', { text: finalTranscript, isFinal: true });
       }
     };
 
     recognition.onerror = (event: SpeechRecognitionErrorEvent) => {
-      if (event.error === 'no-speech') return; // Normal — user just isn't talking
-      if (event.error === 'aborted') return; // We stopped it intentionally
-
+      if (event.error === 'no-speech' || event.error === 'aborted') return;
       console.error('Speech recognition error:', event.error);
       if (event.error === 'not-allowed') {
         setError('Microphone access denied. Please allow microphone access and try again.');
@@ -268,11 +360,7 @@ export function useTranslation(myLanguage: string) {
     recognition.onend = () => {
       // Auto-restart if still supposed to be listening
       if (recognitionRef.current === recognition) {
-        try {
-          recognition.start();
-        } catch {
-          // Already started or page closed
-        }
+        try { recognition.start(); } catch { /* already started or page closed */ }
       }
     };
 
@@ -281,21 +369,16 @@ export function useTranslation(myLanguage: string) {
       recognitionRef.current = recognition;
       setIsListening(true);
       setError(null);
-    } catch (err) {
+    } catch {
       setError('Could not start speech recognition.');
     }
   }, [roomCode]);
 
-  // Stop listening
   const stopListening = useCallback(() => {
     if (recognitionRef.current) {
       const recognition = recognitionRef.current;
-      recognitionRef.current = null; // Clear ref before stopping to prevent auto-restart
-      try {
-        recognition.stop();
-      } catch {
-        // Already stopped
-      }
+      recognitionRef.current = null;
+      try { recognition.stop(); } catch { /* already stopped */ }
     }
     setIsListening(false);
     setInterimText(null);
