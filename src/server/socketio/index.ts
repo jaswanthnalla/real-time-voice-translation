@@ -20,10 +20,13 @@ interface Room {
 const rooms = new Map<string, Room>();
 const socketToRoom = new Map<string, string>();
 
-// Per-socket interim state to avoid duplicate translations and manage debouncing
+// Per-socket interim state to avoid duplicate translations and manage debouncing.
+// The `generation` counter prevents stale async translations from emitting
+// after a final speech event has already been processed (race condition fix).
 const interimState = new Map<string, {
   lastText: string;
   timer: ReturnType<typeof setTimeout> | null;
+  generation: number;
 }>();
 
 function generateRoomCode(): string {
@@ -38,8 +41,14 @@ function generateRoomCode(): string {
 
 function cleanupSocketState(socketId: string): void {
   const state = interimState.get(socketId);
-  if (state?.timer) clearTimeout(state.timer);
-  interimState.delete(socketId);
+  if (state) {
+    if (state.timer) clearTimeout(state.timer);
+    // Bump generation so any in-flight async translation is discarded
+    state.generation++;
+    // Don't delete — keep the bumped generation so the guard works
+    state.lastText = '';
+    state.timer = null;
+  }
 }
 
 export function setupSocketIOServer(server: http.Server): Server {
@@ -134,7 +143,7 @@ export function setupSocketIOServer(server: http.Server): Server {
         // --- INTERIM: debounced live subtitle (translated) ---
         let state = interimState.get(socket.id);
         if (!state) {
-          state = { lastText: '', timer: null };
+          state = { lastText: '', timer: null, generation: 0 };
           interimState.set(socket.id, state);
         }
 
@@ -145,10 +154,20 @@ export function setupSocketIOServer(server: http.Server): Server {
         // Clear previous debounce timer
         if (state.timer) clearTimeout(state.timer);
 
-        // Debounce: wait 500ms before translating to reduce API spam
-        // and avoid translating rapidly changing partial words
+        // Bump generation — any in-flight async translation from a
+        // previous timer with a lower generation will be discarded
+        state.generation++;
+        const currentGen = state.generation;
+
+        // Debounce: wait 300ms before translating to reduce API spam
         state.timer = setTimeout(async () => {
           const subtitleText = sameLang ? text : await translateSafe(text, sourceLang, targetLang);
+
+          // RACE CONDITION GUARD: if a final speech arrived while we
+          // were translating, our generation was reset. Don't emit
+          // a stale subtitle that would overwrite the final result.
+          const nowState = interimState.get(socket.id);
+          if (!nowState || nowState.generation !== currentGen) return;
 
           io.to(otherUser.socketId).emit('live_subtitle', {
             senderId: socket.id,
@@ -158,7 +177,7 @@ export function setupSocketIOServer(server: http.Server): Server {
             sourceLang,
             targetLang,
           });
-        }, 500);
+        }, 300);
 
         return;
       }
