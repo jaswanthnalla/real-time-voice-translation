@@ -6,6 +6,11 @@ const SPEECH_LANG_MAP: Record<string, string> = {
   en: 'en-US', es: 'es-ES', fr: 'fr-FR', de: 'de-DE',
   it: 'it-IT', pt: 'pt-BR', ru: 'ru-RU', zh: 'zh-CN',
   ja: 'ja-JP', ko: 'ko-KR', ar: 'ar-SA', hi: 'hi-IN',
+  te: 'te-IN', ta: 'ta-IN', kn: 'kn-IN', ml: 'ml-IN',
+  bn: 'bn-IN', mr: 'mr-IN', gu: 'gu-IN', pa: 'pa-IN',
+  ur: 'ur-PK', th: 'th-TH', vi: 'vi-VN', tr: 'tr-TR',
+  nl: 'nl-NL', pl: 'pl-PL', sv: 'sv-SE', id: 'id-ID',
+  ms: 'ms-MY',
 };
 
 export interface TranscriptEntry {

@@ -11,6 +11,23 @@ export const SUPPORTED_LANGUAGES: Record<string, string> = {
   ko: 'Korean',
   ar: 'Arabic',
   hi: 'Hindi',
+  te: 'Telugu',
+  ta: 'Tamil',
+  kn: 'Kannada',
+  ml: 'Malayalam',
+  bn: 'Bengali',
+  mr: 'Marathi',
+  gu: 'Gujarati',
+  pa: 'Punjabi',
+  ur: 'Urdu',
+  th: 'Thai',
+  vi: 'Vietnamese',
+  tr: 'Turkish',
+  nl: 'Dutch',
+  pl: 'Polish',
+  sv: 'Swedish',
+  id: 'Indonesian',
+  ms: 'Malay',
 };
 
 export const AUDIO_CONFIG = {
