@@ -17,10 +17,7 @@ interface Room {
   createdAt: number;
 }
 
-// Active rooms indexed by room code
 const rooms = new Map<string, Room>();
-
-// Map socket ID to room code for quick lookup on disconnect
 const socketToRoom = new Map<string, string>();
 
 function generateRoomCode(): string {
@@ -34,8 +31,12 @@ function generateRoomCode(): string {
 }
 
 export function setupSocketIOServer(server: http.Server): Server {
+  // Sanitize CORS origin the same way app.ts does
+  const rawOrigin = config.cors.origin.trim().replace(/^["']|["']$/g, '');
+  const corsOrigin = rawOrigin && /^https?:\/\//.test(rawOrigin) ? rawOrigin : '*';
+
   const io = new Server(server, {
-    cors: { origin: config.cors.origin, methods: ['GET', 'POST'] },
+    cors: { origin: corsOrigin, methods: ['GET', 'POST'] },
     transports: ['websocket', 'polling'],
   });
 
@@ -43,24 +44,14 @@ export function setupSocketIOServer(server: http.Server): Server {
     websocketConnectionsGauge.inc();
     logger.info('Client connected', { socketId: socket.id });
 
-    // Create a new room
     socket.on('create_room', (payload: { language: string; nickname: string }) => {
       handleLeaveRoom(socket, io);
 
       const { language, nickname } = payload;
       const code = generateRoomCode();
 
-      const room: Room = {
-        code,
-        users: new Map(),
-        createdAt: Date.now(),
-      };
-
-      const user: RoomUser = {
-        socketId: socket.id,
-        language,
-        nickname: nickname || 'User 1',
-      };
+      const room: Room = { code, users: new Map(), createdAt: Date.now() };
+      const user: RoomUser = { socketId: socket.id, language, nickname: nickname || 'User 1' };
 
       room.users.set(socket.id, user);
       rooms.set(code, room);
@@ -68,11 +59,9 @@ export function setupSocketIOServer(server: http.Server): Server {
 
       socket.join(code);
       socket.emit('room_created', { roomCode: code, userId: socket.id });
-
       logger.info('Room created', { code, language, nickname });
     });
 
-    // Join an existing room
     socket.on('join_room', (payload: { roomCode: string; language: string; nickname: string }) => {
       handleLeaveRoom(socket, io);
 
@@ -84,32 +73,21 @@ export function setupSocketIOServer(server: http.Server): Server {
         socket.emit('room_error', { message: 'Room not found. Check the code and try again.' });
         return;
       }
-
       if (room.users.size >= 2) {
         socket.emit('room_error', { message: 'Room is full. Only 2 participants allowed.' });
         return;
       }
 
-      const user: RoomUser = {
-        socketId: socket.id,
-        language,
-        nickname: nickname || 'User 2',
-      };
-
+      const user: RoomUser = { socketId: socket.id, language, nickname: nickname || 'User 2' };
       room.users.set(socket.id, user);
       socketToRoom.set(socket.id, code);
-
       socket.join(code);
 
       const otherUsers = Array.from(room.users.values()).filter(u => u.socketId !== socket.id);
       socket.emit('room_joined', {
         roomCode: code,
         userId: socket.id,
-        participants: otherUsers.map(u => ({
-          id: u.socketId,
-          nickname: u.nickname,
-          language: u.language,
-        })),
+        participants: otherUsers.map(u => ({ id: u.socketId, nickname: u.nickname, language: u.language })),
       });
 
       socket.to(code).emit('participant_joined', {
@@ -121,8 +99,16 @@ export function setupSocketIOServer(server: http.Server): Server {
       logger.info('User joined room', { code, language, nickname });
     });
 
-    // Receive transcribed text from client (browser Web Speech API does STT on client side)
-    // Server translates and broadcasts to the room
+    /**
+     * Voice-first translation pipeline:
+     *
+     * 1. Client STT (Web Speech API) sends interim/final text
+     * 2. For interim: show typing indicator to receiver only
+     * 3. For final: translate, then send TWO events:
+     *    a) 'speak_translation' → receiver only (speaks aloud immediately)
+     *    b) 'translation_result' → both users (sender sees transcript instantly,
+     *        receiver delays showing transcript until speech finishes)
+     */
     socket.on('speech_text', async (payload: { text: string; isFinal: boolean }) => {
       const roomCode = socketToRoom.get(socket.id);
       if (!roomCode) return;
@@ -138,42 +124,52 @@ export function setupSocketIOServer(server: http.Server): Server {
 
       const otherUser = Array.from(room.users.values()).find(u => u.socketId !== socket.id);
 
+      // Interim text — typing indicator to the other user only
       if (!isFinal) {
-        io.to(roomCode).emit('interim_transcript', {
-          senderId: socket.id,
-          senderNickname: sender.nickname,
-          originalText: text,
-          sourceLang: sender.language,
-        });
+        if (otherUser) {
+          io.to(otherUser.socketId).emit('interim_transcript', {
+            senderId: socket.id,
+            senderNickname: sender.nickname,
+            originalText: text,
+            sourceLang: sender.language,
+          });
+        }
         return;
       }
 
-      // Final transcript — translate and send
+      // Final — translate and deliver voice-first
       try {
         const sourceLang = sender.language;
         const targetLang = otherUser?.language || sourceLang;
+        const timestamp = Date.now();
 
         let translatedText = text;
-
         if (sourceLang !== targetLang) {
           const result = await freeTranslation.translate(text, sourceLang, targetLang);
           translatedText = result.translatedText;
         }
 
-        io.to(roomCode).emit('translation_result', {
+        const msg = {
           senderId: socket.id,
           senderNickname: sender.nickname,
           originalText: text,
           translatedText,
           sourceLang,
           targetLang,
-          timestamp: Date.now(),
-        });
+          timestamp,
+        };
+
+        // Phase 1: Voice — send to receiver only so they hear it first
+        if (otherUser && sourceLang !== targetLang) {
+          io.to(otherUser.socketId).emit('speak_translation', msg);
+        }
+
+        // Phase 2: Transcript — send to both
+        // Sender sees it immediately; receiver shows it after speech ends
+        io.to(roomCode).emit('translation_result', msg);
 
         logger.debug('Translation sent', {
-          roomCode,
-          from: sourceLang,
-          to: targetLang,
+          roomCode, from: sourceLang, to: targetLang,
           original: text.substring(0, 50),
         });
       } catch (error) {
@@ -182,9 +178,7 @@ export function setupSocketIOServer(server: http.Server): Server {
       }
     });
 
-    socket.on('leave_room', () => {
-      handleLeaveRoom(socket, io);
-    });
+    socket.on('leave_room', () => handleLeaveRoom(socket, io));
 
     socket.on('disconnect', () => {
       websocketConnectionsGauge.dec();
@@ -217,12 +211,10 @@ function handleLeaveRoom(socket: Socket, _io: Server): void {
   if (room) {
     const user = room.users.get(socket.id);
     room.users.delete(socket.id);
-
     socket.to(roomCode).emit('participant_left', {
       id: socket.id,
       nickname: user?.nickname || 'Unknown',
     });
-
     if (room.users.size === 0) {
       rooms.delete(roomCode);
       logger.debug('Room deleted (empty)', { code: roomCode });
