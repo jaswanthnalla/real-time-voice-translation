@@ -20,8 +20,11 @@ interface Room {
 const rooms = new Map<string, Room>();
 const socketToRoom = new Map<string, string>();
 
-// Track last interim text per socket to avoid duplicate sends
-const lastInterimText = new Map<string, string>();
+// Per-socket interim state to avoid duplicate translations and manage debouncing
+const interimState = new Map<string, {
+  lastText: string;
+  timer: ReturnType<typeof setTimeout> | null;
+}>();
 
 function generateRoomCode(): string {
   const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
@@ -31,6 +34,12 @@ function generateRoomCode(): string {
   }
   if (rooms.has(code)) return generateRoomCode();
   return code;
+}
+
+function cleanupSocketState(socketId: string): void {
+  const state = interimState.get(socketId);
+  if (state?.timer) clearTimeout(state.timer);
+  interimState.delete(socketId);
 }
 
 export function setupSocketIOServer(server: http.Server): Server {
@@ -89,15 +98,18 @@ export function setupSocketIOServer(server: http.Server): Server {
     });
 
     /**
-     * Live interpreter pipeline:
+     * Voice translation pipeline — designed for phone-call feel.
      *
-     * INTERIM text: forward raw text as live subtitle (no translation,
-     *   no TTS) — partial speech recognition is often inaccurate, so
-     *   translating/speaking it produces glitchy results.
+     * INTERIM speech (isFinal=false):
+     *   Debounce 500ms, then translate and send as 'live_subtitle'
+     *   to the receiver. Shown as a live updating subtitle in their
+     *   language. NOT spoken aloud (interim STT is too inaccurate
+     *   for TTS — causes glitchy/wrong audio).
      *
-     * FINAL text: translate and send as 'live_voice' (isFinal=true)
-     *   → receiver speaks the clean final translation aloud
-     *   → transcript entry added for both users via 'translation_result'
+     * FINAL speech (isFinal=true):
+     *   Translate immediately, send as 'final_voice' to receiver
+     *   (for TTS) and 'translation_result' to both (for transcript).
+     *   Receiver speaks the translation aloud, then shows transcript.
      *
      * Both users can speak at the same time (full duplex).
      */
@@ -119,25 +131,41 @@ export function setupSocketIOServer(server: http.Server): Server {
       const sameLang = sourceLang === targetLang;
 
       if (!isFinal) {
-        // Interim — forward raw text as live subtitle (no translation)
-        // Skip if same text as last interim to avoid spamming
-        if (lastInterimText.get(socket.id) === text) return;
-        lastInterimText.set(socket.id, text);
+        // --- INTERIM: debounced live subtitle (translated) ---
+        let state = interimState.get(socket.id);
+        if (!state) {
+          state = { lastText: '', timer: null };
+          interimState.set(socket.id, state);
+        }
 
-        io.to(otherUser.socketId).emit('live_voice', {
-          senderId: socket.id,
-          senderNickname: sender.nickname,
-          text,
-          translatedText: text, // raw untranslated — just for subtitle display
-          sourceLang,
-          targetLang,
-          isFinal: false,
-        });
+        // Skip duplicate text
+        if (state.lastText === text) return;
+        state.lastText = text;
+
+        // Clear previous debounce timer
+        if (state.timer) clearTimeout(state.timer);
+
+        // Debounce: wait 500ms before translating to reduce API spam
+        // and avoid translating rapidly changing partial words
+        state.timer = setTimeout(async () => {
+          const subtitleText = sameLang ? text : await translateSafe(text, sourceLang, targetLang);
+
+          io.to(otherUser.socketId).emit('live_subtitle', {
+            senderId: socket.id,
+            senderNickname: sender.nickname,
+            originalText: text,
+            translatedText: subtitleText,
+            sourceLang,
+            targetLang,
+          });
+        }, 500);
+
         return;
       }
 
-      // FINAL — translate and send for TTS
-      lastInterimText.delete(socket.id);
+      // --- FINAL: translate and send for TTS + transcript ---
+      // Cancel any pending interim translation for this socket
+      cleanupSocketState(socket.id);
 
       try {
         const timestamp = Date.now();
@@ -147,7 +175,8 @@ export function setupSocketIOServer(server: http.Server): Server {
           translatedText = result.translatedText;
         }
 
-        const msg = {
+        // Send to receiver for TTS — they hear this spoken aloud
+        io.to(otherUser.socketId).emit('final_voice', {
           senderId: socket.id,
           senderNickname: sender.nickname,
           originalText: text,
@@ -155,21 +184,18 @@ export function setupSocketIOServer(server: http.Server): Server {
           sourceLang,
           targetLang,
           timestamp,
-        };
-
-        // Send final translated voice to receiver for TTS
-        io.to(otherUser.socketId).emit('live_voice', {
-          senderId: socket.id,
-          senderNickname: sender.nickname,
-          text,
-          translatedText,
-          sourceLang,
-          targetLang,
-          isFinal: true,
         });
 
         // Send transcript to both users
-        io.to(roomCode).emit('translation_result', msg);
+        io.to(roomCode).emit('translation_result', {
+          senderId: socket.id,
+          senderNickname: sender.nickname,
+          originalText: text,
+          translatedText,
+          sourceLang,
+          targetLang,
+          timestamp,
+        });
 
         logger.debug('Translation sent', {
           roomCode, from: sourceLang, to: targetLang,
@@ -185,12 +211,13 @@ export function setupSocketIOServer(server: http.Server): Server {
 
     socket.on('disconnect', () => {
       websocketConnectionsGauge.dec();
-      lastInterimText.delete(socket.id);
+      cleanupSocketState(socket.id);
       handleLeaveRoom(socket, io);
       logger.info('Client disconnected', { socketId: socket.id });
     });
   });
 
+  // Clean up stale empty rooms every 5 minutes
   setInterval(() => {
     const now = Date.now();
     const staleThreshold = 30 * 60 * 1000;
@@ -203,6 +230,19 @@ export function setupSocketIOServer(server: http.Server): Server {
 
   logger.info('Socket.IO server attached');
   return io;
+}
+
+/**
+ * Safe translation wrapper — returns original text on failure
+ * so the subtitle still shows something useful.
+ */
+async function translateSafe(text: string, sourceLang: string, targetLang: string): Promise<string> {
+  try {
+    const result = await freeTranslation.translate(text, sourceLang, targetLang);
+    return result.translatedText;
+  } catch {
+    return text;
+  }
 }
 
 function handleLeaveRoom(socket: Socket, _io: Server): void {
