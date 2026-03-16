@@ -74,6 +74,11 @@ export function useTranslation(myLanguage: string) {
   }>>([]);
   const isSpeakingRef = useRef(false);
 
+  // When TTS is playing, we mute the mic to prevent the speaker audio
+  // from being picked up and re-transcribed (echo/feedback loop).
+  // This is the #1 cause of phantom transcriptions.
+  const micMutedRef = useRef(false);
+
   // Timestamps of translations currently waiting in the speech queue.
   // When 'translation_result' arrives for the receiver, if the timestamp
   // is pending here, we skip adding it to transcript — it'll be added
@@ -97,6 +102,10 @@ export function useTranslation(myLanguage: string) {
     isSpeakingRef.current = true;
     setIsSpeaking(true);
 
+    // MUTE mic while TTS plays — prevents speaker audio from being
+    // picked up by the mic and re-transcribed as phantom speech
+    micMutedRef.current = true;
+
     const utterance = new SpeechSynthesisUtterance(next.text);
     utterance.lang = SPEECH_LANG_MAP[next.lang] || next.lang;
     utterance.rate = 1.0;
@@ -107,8 +116,17 @@ export function useTranslation(myLanguage: string) {
       isSpeakingRef.current = false;
       setIsSpeaking(false);
       next.onDone();
-      // Process next in queue
-      processQueue();
+
+      // Keep mic muted for 300ms after TTS ends — the mic can still
+      // pick up the tail-end echo of the speaker audio
+      setTimeout(() => {
+        // Only unmute if no more items in queue (otherwise next
+        // processQueue call will keep it muted)
+        if (speechQueueRef.current.length === 0) {
+          micMutedRef.current = false;
+        }
+        processQueue();
+      }, 300);
     };
 
     utterance.onend = finish;
@@ -327,18 +345,37 @@ export function useTranslation(myLanguage: string) {
     recognition.maxAlternatives = 1;
 
     recognition.onresult = (event: SpeechRecognitionEvent) => {
+      // DROP all speech while TTS is playing — this is the main fix
+      // for phantom transcriptions. The mic picks up the speaker output
+      // and sends it back as "speech", creating a feedback loop.
+      if (micMutedRef.current) return;
+
       let interimTranscript = '';
       let finalTranscript = '';
 
       for (let i = event.resultIndex; i < event.results.length; i++) {
         const result = event.results[i];
-        const text = result[0].transcript;
+        const confidence = result[0].confidence;
+        const text = result[0].transcript.trim();
+
+        // Skip empty or very short results (noise, breathing)
+        if (text.length < 2) continue;
+
+        // Skip low-confidence results — these are usually background
+        // noise, ambient sounds, or mic artifacts. The threshold 0.5
+        // filters out most garbage while keeping real speech.
+        // (confidence is 0-1, but can be 0 for interim results in
+        // some browsers, so we only filter finals by confidence)
         if (result.isFinal) {
-          finalTranscript += text;
+          if (confidence > 0 && confidence < 0.5) continue;
+          finalTranscript += text + ' ';
         } else {
           interimTranscript += text;
         }
       }
+
+      interimTranscript = interimTranscript.trim();
+      finalTranscript = finalTranscript.trim();
 
       if (interimTranscript) {
         socket.emit('speech_text', { text: interimTranscript, isFinal: false });
