@@ -433,12 +433,30 @@ export function useTranslation(myLanguage: string) {
     recognition.lang = SPEECH_LANG_MAP[myLanguageRef.current] || myLanguageRef.current;
     recognition.maxAlternatives = 1;
 
+    // SENTENCE BATCHING: The Web Speech API in continuous mode fires
+    // isFinal:true for every word or short phrase, not per sentence.
+    // "How are you doing" becomes 3-4 separate finals: "How", "are you",
+    // "doing". We accumulate these and only send to the server after
+    // 1.5 seconds of silence (no new finals), treating the batch as
+    // one complete sentence.
+    let batchedFinal = '';
+    let batchTimer: ReturnType<typeof setTimeout> | null = null;
+
+    const flushBatch = () => {
+      batchTimer = null;
+      const sentence = batchedFinal.trim();
+      batchedFinal = '';
+      if (sentence.length >= 2) {
+        dbg('STT', `Final sentence: "${sentence}"`);
+        socket.emit('speech_text', { text: sentence, isFinal: true });
+      }
+    };
+
     recognition.onresult = (event: SpeechRecognitionEvent) => {
       // DROP all speech while TTS is playing — prevents echo feedback loop
       if (micMutedRef.current) return;
 
       let interimTranscript = '';
-      let finalTranscript = '';
 
       for (let i = event.resultIndex; i < event.results.length; i++) {
         const result = event.results[i];
@@ -454,21 +472,22 @@ export function useTranslation(myLanguage: string) {
             dbg('STT', `Skipped low-confidence final: "${text}" (${confidence})`);
             continue;
           }
-          finalTranscript += text + ' ';
+          // Accumulate into batch
+          batchedFinal += text + ' ';
+          // Reset the batch timer — wait 1.5s of silence before sending
+          if (batchTimer) clearTimeout(batchTimer);
+          batchTimer = setTimeout(flushBatch, 1500);
         } else {
           interimTranscript += text;
         }
       }
 
       interimTranscript = interimTranscript.trim();
-      finalTranscript = finalTranscript.trim();
 
       if (interimTranscript) {
-        socket.emit('speech_text', { text: interimTranscript, isFinal: false });
-      }
-      if (finalTranscript) {
-        dbg('STT', `Final: "${finalTranscript}"`);
-        socket.emit('speech_text', { text: finalTranscript, isFinal: true });
+        // Send full accumulated text + current interim as the subtitle
+        const fullInterim = (batchedFinal + interimTranscript).trim();
+        socket.emit('speech_text', { text: fullInterim, isFinal: false });
       }
     };
 
